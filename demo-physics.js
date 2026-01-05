@@ -194,19 +194,29 @@ plt.show()`,
     return;
   }
 
-  for (let i = 0; i < notebookResult.data.cells.length; i++) {
-    const cell = notebookResult.data.cells[i];
+  const notebookData = notebookResult.data;
+  let executionCount = 0;
+
+  for (let i = 0; i < notebookData.cells.length; i++) {
+    const cell = notebookData.cells[i];
 
     if (cell.type === 'code') {
       console.log(`--- Cell ${i} (code) ---`);
       const execResult = await client.executeCodeStreaming(sessionId, cell.content, 60000);
 
-      if (execResult.success && execResult.data.outputs.length > 0) {
-        for (const output of execResult.data.outputs) {
+      if (execResult.success) {
+        executionCount++;
+        // Update the cell with execution results
+        cell.executionCount = executionCount;
+        cell.outputs = execResult.data.outputs || [];
+
+        for (const output of cell.outputs) {
           if (output.type === 'stdout') {
             console.log(output.content);
           } else if (output.type === 'error') {
             console.error('Error:', output.content.split('\n').slice(-3).join('\n'));
+          } else if (output.type === 'image') {
+            console.log('[Image output generated]');
           }
         }
       }
@@ -217,7 +227,16 @@ plt.show()`,
     }
   }
 
-  // Step 4: Cleanup
+  // Step 4: Save the notebook with outputs
+  console.log('💾 Saving notebook with outputs...');
+  const saveResult = await client.writeNotebook(notebookData);
+  if (saveResult.success) {
+    console.log('✓ Notebook saved with execution outputs');
+  } else {
+    console.error('Failed to save notebook:', saveResult.error);
+  }
+
+  // Step 5: Cleanup
   console.log('🧹 Shutting down kernel...');
   await client.shutdownKernel(sessionId);
 
