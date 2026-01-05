@@ -677,6 +677,14 @@ export class NebulaClient {
   // ===========================================================================
 
   private parseJupyterOutput(output: any): CellOutput {
+    // Handle outputs already in internal format (from WebSocket)
+    if (output.type && output.content !== undefined) {
+      return {
+        type: output.type,
+        content: output.content,
+      };
+    }
+    // Handle Jupyter notebook format
     if (output.output_type === 'stream') {
       return {
         type: output.name === 'stderr' ? 'stderr' : 'stdout',
