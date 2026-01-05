@@ -145,6 +145,18 @@ export declare class NebulaClient {
         totalCells: number;
     }>>;
     /**
+     * Execute a cell in a notebook and save the outputs back
+     *
+     * This combines read -> execute -> save into a single operation,
+     * eliminating round-trips for the common iterative workflow.
+     */
+    executeCell(path: string, cellIndex: number, sessionId: string, options?: {
+        timeout?: number;
+        save?: boolean;
+    }): Promise<ToolResult<ExecutionResult & {
+        cellIndex: number;
+    }>>;
+    /**
      * Search cells in a notebook by keyword
      */
     searchCells(path: string, query: string, limit?: number): Promise<ToolResult<SearchResult>>;

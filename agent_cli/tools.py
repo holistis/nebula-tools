@@ -630,10 +630,14 @@ def _wrap_tool(func, tool_name: str):
             params = function_tool.__signature__.parameters  # type: ignore[attr-defined]
         except Exception:
             params = {}
+    kwargs = {}
+    if "strict_mode" in params:
+        # Avoid strict schema failures for Dict-typed params in tools.
+        kwargs["strict_mode"] = False
     if "name_override" in params:
-        return function_tool(name_override=tool_name)(func)
+        return function_tool(name_override=tool_name, **kwargs)(func)
     if "name" in params:
-        return function_tool(name=tool_name)(func)
+        return function_tool(name=tool_name, **kwargs)(func)
     func.__name__ = tool_name
     return function_tool(func)
 

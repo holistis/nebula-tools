@@ -572,6 +572,64 @@ export class NebulaClient {
   }
 
   /**
+   * Execute a cell in a notebook and save the outputs back
+   *
+   * This combines read -> execute -> save into a single operation,
+   * eliminating round-trips for the common iterative workflow.
+   */
+  async executeCell(
+    path: string,
+    cellIndex: number,
+    sessionId: string,
+    options: { timeout?: number; save?: boolean } = {}
+  ): Promise<ToolResult<ExecutionResult & { cellIndex: number }>> {
+    const { timeout = 60000, save = true } = options;
+
+    // Read the notebook
+    const notebookResult = await this.readNotebook(path);
+    if (!notebookResult.success) {
+      return { success: false, error: notebookResult.error };
+    }
+
+    const notebook = notebookResult.data!;
+    if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+      return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+    }
+
+    const cell = notebook.cells[cellIndex];
+    if (cell.type !== 'code') {
+      return { success: false, error: `Cell ${cellIndex} is not a code cell (type: ${cell.type})` };
+    }
+
+    // Execute the cell
+    const execResult = await this.executeCodeStreaming(sessionId, cell.content, timeout);
+    if (!execResult.success) {
+      return { success: false, error: execResult.error };
+    }
+
+    // Update cell with outputs
+    cell.outputs = execResult.data!.outputs;
+    cell.executionCount = execResult.data!.executionCount;
+
+    // Save the notebook with updated outputs
+    if (save) {
+      const writeResult = await this.writeNotebook(notebook);
+      if (!writeResult.success) {
+        return { success: false, error: `Execution succeeded but save failed: ${writeResult.error}` };
+      }
+    }
+
+    return {
+      success: execResult.data!.success,
+      data: {
+        ...execResult.data!,
+        cellIndex,
+      },
+      error: execResult.data!.error,
+    };
+  }
+
+  /**
    * Search cells in a notebook by keyword
    */
   async searchCells(path: string, query: string, limit: number = 5): Promise<ToolResult<SearchResult>> {

@@ -11,7 +11,7 @@ import { successResponse, errorResponse, formatOutputs, truncateWithHeadTail } f
 export const executionTools: Tool[] = [
   {
     name: 'execute_cell',
-    description: 'Execute a notebook cell by index and return its output. Requires an active kernel session.',
+    description: 'Execute a notebook cell by index and return its output. By default, saves the outputs back to the notebook. Requires an active kernel session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -31,6 +31,11 @@ export const executionTools: Tool[] = [
           type: 'number',
           description: 'Execution timeout in seconds (default: 60)',
           default: 60,
+        },
+        save_outputs: {
+          type: 'boolean',
+          description: 'Save execution outputs back to the notebook (default: true)',
+          default: true,
         },
       },
       required: ['path', 'cell_index'],
@@ -72,22 +77,7 @@ export async function handleExecutionTool(
       const cellIndex = args.cell_index as number;
       let sessionId = args.session_id as string | undefined;
       const timeout = (args.timeout as number) ?? 60;
-
-      // Read the notebook to get the cell content
-      const notebookResult = await client.readNotebook(path);
-      if (!notebookResult.success) {
-        return errorResponse(notebookResult.error || 'Failed to read notebook');
-      }
-
-      const notebook = notebookResult.data!;
-      if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
-        return errorResponse(`Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})`);
-      }
-
-      const cell = notebook.cells[cellIndex];
-      if (cell.type !== 'code') {
-        return errorResponse(`Cell ${cellIndex} is a ${cell.type} cell, not a code cell`);
-      }
+      const saveOutputs = (args.save_outputs as boolean) ?? true;
 
       // Get or create kernel session if not provided
       if (!sessionId) {
@@ -102,9 +92,12 @@ export async function handleExecutionTool(
         return errorResponse('No kernel session available');
       }
 
-      // Execute the code with streaming
+      // Execute the cell (reads notebook, executes, saves outputs in one operation)
       const startTime = Date.now();
-      const result = await client.executeCodeStreaming(sessionId, cell.content, timeout * 1000);
+      const result = await client.executeCell(path, cellIndex, sessionId, {
+        timeout: timeout * 1000,
+        save: saveOutputs,
+      });
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
@@ -113,13 +106,15 @@ export async function handleExecutionTool(
       }
 
       const outputs = result.data?.outputs ?? [];
+      const savedMsg = saveOutputs ? ' (outputs saved)' : '';
+
       if (outputs.length === 0) {
-        return successResponse(`Cell ${cellIndex} executed successfully in ${elapsed}s (no output)`);
+        return successResponse(`Cell ${cellIndex} executed in ${elapsed}s${savedMsg} (no output)`);
       }
 
       // Format outputs
       const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [
-        { type: 'text', text: `Cell ${cellIndex} executed in ${elapsed}s:\n` },
+        { type: 'text', text: `Cell ${cellIndex} executed in ${elapsed}s${savedMsg}:\n` },
       ];
       content.push(...formatOutputs(outputs));
 
