@@ -2,7 +2,7 @@
 node_modules/
 
 # Build output
-dist/
+# Note: dist/ is included for easy MCP server usage without building
 gemini-cli/dist/
 
 # Logs
