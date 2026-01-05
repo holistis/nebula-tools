@@ -363,17 +363,23 @@ export class NebulaClient {
    * Read a notebook file
    */
   async readNotebook(path: string): Promise<ToolResult<Notebook>> {
-    const result = await this.fetch<{ content: string }>('/api/fs/read', {
-      method: 'POST',
-      body: JSON.stringify({ path }),
-    });
+    interface ReadFileResponse {
+      path: string;
+      type: 'text' | 'notebook' | 'binary';
+      content: any;  // string for text, object for notebook, null for binary
+    }
+
+    const result = await this.fetch<ReadFileResponse>(`/api/fs/read?path=${encodeURIComponent(path)}`);
 
     if (!result.success) {
       return { success: false, error: result.error };
     }
 
     try {
-      const notebook = JSON.parse(result.data!.content);
+      // API returns parsed JSON object for notebooks, string for text files
+      const notebook = result.data!.type === 'notebook'
+        ? result.data!.content
+        : JSON.parse(result.data!.content);
       const cells: NotebookCell[] = (notebook.cells || []).map((cell: any, index: number) => ({
         id: cell.metadata?.nebula_id || `cell-${index}`,
         type: cell.cell_type === 'code' ? 'code' : 'markdown',
@@ -425,15 +431,59 @@ export class NebulaClient {
    * List files in a directory
    */
   async listFiles(path: string = '.'): Promise<ToolResult<{ name: string; type: string }[]>> {
-    const result = await this.fetch<Array<{ name: string; type: string }>>(`/api/fs/list?path=${encodeURIComponent(path)}`);
-    return result;
+    interface ListDirResponse {
+      path: string;
+      parent: string | null;
+      mtime: number;
+      items: Array<{
+        name: string;
+        path: string;
+        isDirectory: boolean;
+        size: string;
+        modified: number;
+        extension: string;
+        fileType: string;
+      }>;
+    }
+
+    const result = await this.fetch<ListDirResponse>(`/api/fs/list?path=${encodeURIComponent(path)}`);
+    if (!result.success) return { success: false, error: result.error };
+
+    // Transform the response to match expected format
+    const items = result.data!.items.map((item) => ({
+      name: item.name,
+      type: item.isDirectory ? 'directory' : item.fileType || 'file',
+    }));
+
+    return { success: true, data: items };
   }
 
   /**
    * Read a file's content
    */
   async readFile(path: string): Promise<ToolResult<{ content: string }>> {
-    return this.fetch<{ content: string }>(`/api/fs/read?path=${encodeURIComponent(path)}`);
+    interface ReadFileResponse {
+      path: string;
+      type: 'text' | 'notebook' | 'binary';
+      content: any;
+      message?: string;
+    }
+
+    const result = await this.fetch<ReadFileResponse>(`/api/fs/read?path=${encodeURIComponent(path)}`);
+    if (!result.success) return { success: false, error: result.error };
+
+    // Handle binary files
+    if (result.data!.type === 'binary') {
+      return { success: false, error: result.data!.message || 'Binary file cannot be read as text' };
+    }
+
+    // Handle notebook files (return as JSON string)
+    if (result.data!.type === 'notebook') {
+      return { success: true, data: { content: JSON.stringify(result.data!.content, null, 2) } };
+    }
+
+    // Handle text files
+    return { success: true, data: { content: result.data!.content } };
   }
 
   /**
