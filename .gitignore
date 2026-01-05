@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+gemini-cli/dist/
 
 # Logs
 *.log
@@ -24,3 +25,12 @@ Thumbs.db
 
 # Test coverage
 coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.Python
+*.egg-info/
