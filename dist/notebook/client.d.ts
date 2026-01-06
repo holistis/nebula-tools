@@ -7,7 +7,7 @@
  * - Code execution with WebSocket streaming
  * - File system operations
  */
-import type { Notebook, CellOutput, ToolResult } from '../types.js';
+import type { Notebook, CellOutput, CellMetadata, ToolResult } from '../types.js';
 export interface NebulaClientConfig {
     /** Base URL for Nebula API (default: http://localhost:8000) */
     baseUrl?: string;
@@ -144,6 +144,27 @@ export declare class NebulaClient {
     deleteCell(path: string, cellIndex: number): Promise<ToolResult<{
         totalCells: number;
     }>>;
+    /**
+     * Move a cell from one position to another within a notebook
+     */
+    moveCell(path: string, fromIndex: number, toIndex: number): Promise<ToolResult<{
+        totalCells: number;
+    }>>;
+    /**
+     * Duplicate a cell, inserting the copy after the original
+     */
+    duplicateCell(path: string, cellIndex: number): Promise<ToolResult<{
+        newCellIndex: number;
+        totalCells: number;
+    }>>;
+    /**
+     * Get metadata for a specific cell
+     */
+    getCellMetadata(path: string, cellIndex: number): Promise<ToolResult<CellMetadata>>;
+    /**
+     * Update metadata for a specific cell (merges with existing metadata)
+     */
+    setCellMetadata(path: string, cellIndex: number, metadata: Partial<CellMetadata>): Promise<ToolResult<void>>;
     /**
      * Execute a cell in a notebook and save the outputs back
      *

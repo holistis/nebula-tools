@@ -122,6 +122,46 @@ export const notebookTools = [
             required: ['path', 'query'],
         },
     },
+    {
+        name: 'notebook_move_cell',
+        description: 'Move a cell from one position to another within a notebook',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: 'Path to the notebook file',
+                },
+                from_index: {
+                    type: 'number',
+                    description: 'Current cell index (0-based)',
+                },
+                to_index: {
+                    type: 'number',
+                    description: 'Target cell index (0-based)',
+                },
+            },
+            required: ['path', 'from_index', 'to_index'],
+        },
+    },
+    {
+        name: 'notebook_duplicate_cell',
+        description: 'Duplicate a cell, inserting the copy immediately after the original',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: 'Path to the notebook file',
+                },
+                cell_index: {
+                    type: 'number',
+                    description: 'Cell index to duplicate (0-based)',
+                },
+            },
+            required: ['path', 'cell_index'],
+        },
+    },
 ];
 export async function handleNotebookTool(name, args, client) {
     switch (name) {
@@ -231,6 +271,28 @@ export async function handleNotebookTool(name, args, client) {
                 lines.push(`  ${preview}${match.content.length > 80 ? '...' : ''}`);
             });
             return successResponse(lines.join('\n'));
+        }
+        case 'notebook_move_cell': {
+            const path = args.path;
+            const fromIndex = args.from_index;
+            const toIndex = args.to_index;
+            const result = await client.moveCell(path, fromIndex, toIndex);
+            if (!result.success) {
+                return errorResponse(result.error || 'Failed to move cell');
+            }
+            if (fromIndex === toIndex) {
+                return successResponse(`Cell ${fromIndex} already at position ${toIndex} (no change)`);
+            }
+            return successResponse(`Cell moved from position ${fromIndex} to ${toIndex}`);
+        }
+        case 'notebook_duplicate_cell': {
+            const path = args.path;
+            const cellIndex = args.cell_index;
+            const result = await client.duplicateCell(path, cellIndex);
+            if (!result.success) {
+                return errorResponse(result.error || 'Failed to duplicate cell');
+            }
+            return successResponse(`Cell ${cellIndex} duplicated at position ${result.data.newCellIndex} (${result.data.totalCells} cells total)`);
         }
         default:
             return errorResponse(`Unknown notebook tool: ${name}`);

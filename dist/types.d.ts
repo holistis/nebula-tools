@@ -60,6 +60,16 @@ export interface GlobEntry {
     mtimeMs?: number;
 }
 /**
+ * Cell metadata for Jupyter notebooks
+ */
+export interface CellMetadata {
+    tags?: string[];
+    collapsed?: boolean;
+    scrolled?: boolean | 'auto';
+    name?: string;
+    [key: string]: unknown;
+}
+/**
  * Notebook cell representation
  */
 export interface NotebookCell {
@@ -68,6 +78,7 @@ export interface NotebookCell {
     content: string;
     outputs?: CellOutput[];
     executionCount?: number;
+    metadata?: CellMetadata;
 }
 /**
  * Cell output representation

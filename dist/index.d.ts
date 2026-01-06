@@ -41,6 +41,8 @@
  * ```
  */
 export * from './types.js';
+export { classifyError, getErrorMessage, formatErrorMessage, shouldRetry, calculateRetryDelay, ErrorCategory, type ClassifiedError, type RecoverabilityStatus, } from './errors.js';
+export { CircuitBreaker, createCircuitBreaker, CircuitState, type CircuitBreakerOptions, type CircuitBreakerEvent, type CircuitBreakerListener, type CircuitBreakerResult, } from './circuit-breaker.js';
 export { NebulaClient, createNebulaClient, type NebulaClientConfig, type KernelSession, type ExecutionResult, type WriteCellResult, } from './notebook/client.js';
 export { readNotebookCells, writeNotebookCell, executeCell, searchNotebookCells, readCellsToolDefinition, writeCellToolDefinition, executeCellToolDefinition, searchCellsToolDefinition, type ReadCellsParams, type ReadCellsResult, type WriteCellParams, type ExecuteCellParams, type ExecuteCellResult, type SearchCellsParams, type SearchCellsResult, } from './notebook/tools.js';
 /**

@@ -47,6 +47,33 @@
 export * from './types.js';
 
 // =============================================================================
+// Error Handling
+// =============================================================================
+export {
+  classifyError,
+  getErrorMessage,
+  formatErrorMessage,
+  shouldRetry,
+  calculateRetryDelay,
+  ErrorCategory,
+  type ClassifiedError,
+  type RecoverabilityStatus,
+} from './errors.js';
+
+// =============================================================================
+// Circuit Breaker
+// =============================================================================
+export {
+  CircuitBreaker,
+  createCircuitBreaker,
+  CircuitState,
+  type CircuitBreakerOptions,
+  type CircuitBreakerEvent,
+  type CircuitBreakerListener,
+  type CircuitBreakerResult,
+} from './circuit-breaker.js';
+
+// =============================================================================
 // Notebook Tools (unique to nebula-tools, standalone)
 // =============================================================================
 export {

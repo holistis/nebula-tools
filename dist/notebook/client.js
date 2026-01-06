@@ -287,13 +287,18 @@ export class NebulaClient {
             const notebook = result.data.type === 'notebook'
                 ? result.data.content
                 : JSON.parse(result.data.content);
-            const cells = (notebook.cells || []).map((cell, index) => ({
-                id: cell.metadata?.nebula_id || `cell-${index}`,
-                type: cell.cell_type === 'code' ? 'code' : 'markdown',
-                content: Array.isArray(cell.source) ? cell.source.join('') : cell.source,
-                outputs: (cell.outputs || []).map((output) => this.parseJupyterOutput(output)),
-                executionCount: cell.execution_count,
-            }));
+            const cells = (notebook.cells || []).map((cell, index) => {
+                // Extract cell metadata, preserving nebula_id separately as the cell id
+                const { nebula_id, ...cellMetadata } = cell.metadata || {};
+                return {
+                    id: nebula_id || `cell-${index}`,
+                    type: cell.cell_type === 'code' ? 'code' : 'markdown',
+                    content: Array.isArray(cell.source) ? cell.source.join('') : cell.source,
+                    outputs: (cell.outputs || []).map((output) => this.parseJupyterOutput(output)),
+                    executionCount: cell.execution_count,
+                    metadata: Object.keys(cellMetadata).length > 0 ? cellMetadata : undefined,
+                };
+            });
             return {
                 success: true,
                 data: {
@@ -318,7 +323,7 @@ export class NebulaClient {
             cells: notebook.cells.map((cell) => ({
                 cell_type: cell.type,
                 source: cell.content,
-                metadata: { nebula_id: cell.id },
+                metadata: { nebula_id: cell.id, ...cell.metadata },
                 outputs: cell.type === 'code' ? (cell.outputs || []).map((o) => this.toJupyterOutput(o)) : undefined,
                 execution_count: cell.type === 'code' ? cell.executionCount : undefined,
             })),
@@ -432,6 +437,104 @@ export class NebulaClient {
             return { success: false, error: writeResult.error };
         }
         return { success: true, data: { totalCells: notebook.cells.length } };
+    }
+    /**
+     * Move a cell from one position to another within a notebook
+     */
+    async moveCell(path, fromIndex, toIndex) {
+        const notebookResult = await this.readNotebook(path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const notebook = notebookResult.data;
+        const cellCount = notebook.cells.length;
+        // Validate indices
+        if (fromIndex < 0 || fromIndex >= cellCount) {
+            return { success: false, error: `Source index ${fromIndex} out of range (0-${cellCount - 1})` };
+        }
+        if (toIndex < 0 || toIndex >= cellCount) {
+            return { success: false, error: `Target index ${toIndex} out of range (0-${cellCount - 1})` };
+        }
+        // No-op if same position
+        if (fromIndex === toIndex) {
+            return { success: true, data: { totalCells: cellCount } };
+        }
+        // Remove the cell from its current position
+        const [cell] = notebook.cells.splice(fromIndex, 1);
+        // Insert at the new position
+        notebook.cells.splice(toIndex, 0, cell);
+        const writeResult = await this.writeNotebook(notebook);
+        if (!writeResult.success) {
+            return { success: false, error: writeResult.error };
+        }
+        return { success: true, data: { totalCells: notebook.cells.length } };
+    }
+    /**
+     * Duplicate a cell, inserting the copy after the original
+     */
+    async duplicateCell(path, cellIndex) {
+        const notebookResult = await this.readNotebook(path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const notebook = notebookResult.data;
+        const cellCount = notebook.cells.length;
+        // Validate index
+        if (cellIndex < 0 || cellIndex >= cellCount) {
+            return { success: false, error: `Cell index ${cellIndex} out of range (0-${cellCount - 1})` };
+        }
+        // Clone the cell with a new ID
+        const originalCell = notebook.cells[cellIndex];
+        const newCell = {
+            ...originalCell,
+            id: `cell-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            outputs: originalCell.outputs ? [...originalCell.outputs] : undefined,
+            executionCount: undefined, // Reset execution count for the copy
+        };
+        // Insert after the original cell
+        const newIndex = cellIndex + 1;
+        notebook.cells.splice(newIndex, 0, newCell);
+        const writeResult = await this.writeNotebook(notebook);
+        if (!writeResult.success) {
+            return { success: false, error: writeResult.error };
+        }
+        return { success: true, data: { newCellIndex: newIndex, totalCells: notebook.cells.length } };
+    }
+    /**
+     * Get metadata for a specific cell
+     */
+    async getCellMetadata(path, cellIndex) {
+        const notebookResult = await this.readNotebook(path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const notebook = notebookResult.data;
+        if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+            return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+        }
+        const cell = notebook.cells[cellIndex];
+        return { success: true, data: cell.metadata || {} };
+    }
+    /**
+     * Update metadata for a specific cell (merges with existing metadata)
+     */
+    async setCellMetadata(path, cellIndex, metadata) {
+        const notebookResult = await this.readNotebook(path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const notebook = notebookResult.data;
+        if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+            return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+        }
+        // Merge new metadata with existing
+        const cell = notebook.cells[cellIndex];
+        cell.metadata = { ...cell.metadata, ...metadata };
+        const writeResult = await this.writeNotebook(notebook);
+        if (!writeResult.success) {
+            return { success: false, error: writeResult.error };
+        }
+        return { success: true };
     }
     /**
      * Execute a cell in a notebook and save the outputs back
