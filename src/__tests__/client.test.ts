@@ -96,7 +96,7 @@ describe('NebulaClient', () => {
       // The long-running operation should fail or be interrupted
       const result = await longRunPromise;
       // Either it timed out or was interrupted - both are acceptable
-    });
+    }, 15000); // Allow time for interrupt test
 
     it('should restart a kernel', async () => {
       const result = await client.restartKernel(sessionId);
@@ -431,6 +431,104 @@ describe('NebulaClient', () => {
 
     it('should reject negative index', async () => {
       const result = await client.duplicateCell(DUP_NOTEBOOK_PATH, -1);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('out of range');
+    });
+  });
+
+  // ===========================================================================
+  // Cell Metadata Tests
+  // ===========================================================================
+  describe('Cell Metadata', () => {
+    const META_NOTEBOOK_PATH = '/tmp/metadata-test-notebook.ipynb';
+
+    beforeAll(async () => {
+      // Create a test notebook with cells that have metadata
+      const notebook = {
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: { language_info: { name: 'python' } },
+        cells: [
+          {
+            cell_type: 'code',
+            source: 'x = 1',
+            metadata: { tags: ['setup'], collapsed: false },
+            outputs: [],
+            execution_count: null,
+          },
+          {
+            cell_type: 'markdown',
+            source: '# Important Section',
+            metadata: { tags: ['important', 'header'] },
+          },
+          {
+            cell_type: 'code',
+            source: 'print(x)',
+            metadata: {},
+            outputs: [],
+            execution_count: null,
+          },
+        ],
+      };
+      await client.writeFile(META_NOTEBOOK_PATH, JSON.stringify(notebook, null, 2));
+    });
+
+    it('should read cell metadata', async () => {
+      const result = await client.getCellMetadata(META_NOTEBOOK_PATH, 0);
+      expect(result.success).toBe(true);
+      expect(result.data).toBeDefined();
+      expect(result.data!.tags).toEqual(['setup']);
+      expect(result.data!.collapsed).toBe(false);
+    });
+
+    it('should read cell metadata with multiple tags', async () => {
+      const result = await client.getCellMetadata(META_NOTEBOOK_PATH, 1);
+      expect(result.success).toBe(true);
+      expect(result.data!.tags).toEqual(['important', 'header']);
+    });
+
+    it('should return empty metadata for cell without metadata', async () => {
+      const result = await client.getCellMetadata(META_NOTEBOOK_PATH, 2);
+      expect(result.success).toBe(true);
+      expect(result.data).toBeDefined();
+      // Empty or no tags
+      expect(result.data!.tags ?? []).toEqual([]);
+    });
+
+    it('should set cell tags', async () => {
+      const result = await client.setCellMetadata(META_NOTEBOOK_PATH, 2, { tags: ['new-tag'] });
+      expect(result.success).toBe(true);
+
+      // Verify the tag was set
+      const metaResult = await client.getCellMetadata(META_NOTEBOOK_PATH, 2);
+      expect(metaResult.data!.tags).toEqual(['new-tag']);
+    });
+
+    it('should toggle collapsed state', async () => {
+      const result = await client.setCellMetadata(META_NOTEBOOK_PATH, 0, { collapsed: true });
+      expect(result.success).toBe(true);
+
+      // Verify
+      const metaResult = await client.getCellMetadata(META_NOTEBOOK_PATH, 0);
+      expect(metaResult.data!.collapsed).toBe(true);
+    });
+
+    it('should preserve existing metadata when updating', async () => {
+      // First verify current state has tags
+      const before = await client.getCellMetadata(META_NOTEBOOK_PATH, 0);
+      expect(before.data!.tags).toEqual(['setup']);
+
+      // Update only collapsed, not tags
+      await client.setCellMetadata(META_NOTEBOOK_PATH, 0, { scrolled: true });
+
+      // Verify tags still exist
+      const after = await client.getCellMetadata(META_NOTEBOOK_PATH, 0);
+      expect(after.data!.tags).toEqual(['setup']);
+      expect(after.data!.scrolled).toBe(true);
+    });
+
+    it('should reject invalid cell index', async () => {
+      const result = await client.getCellMetadata(META_NOTEBOOK_PATH, 99);
       expect(result.success).toBe(false);
       expect(result.error).toContain('out of range');
     });

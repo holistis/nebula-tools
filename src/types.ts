@@ -65,6 +65,17 @@ export interface GlobEntry {
 }
 
 /**
+ * Cell metadata for Jupyter notebooks
+ */
+export interface CellMetadata {
+  tags?: string[];
+  collapsed?: boolean;
+  scrolled?: boolean | 'auto';
+  name?: string;
+  [key: string]: unknown;  // Allow custom metadata
+}
+
+/**
  * Notebook cell representation
  */
 export interface NotebookCell {
@@ -73,6 +84,7 @@ export interface NotebookCell {
   content: string;
   outputs?: CellOutput[];
   executionCount?: number;
+  metadata?: CellMetadata;
 }
 
 /**

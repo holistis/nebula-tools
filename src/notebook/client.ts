@@ -8,7 +8,7 @@
  * - File system operations
  */
 
-import type { Notebook, NotebookCell, CellOutput, ToolResult } from '../types.js';
+import type { Notebook, NotebookCell, CellOutput, CellMetadata, ToolResult } from '../types.js';
 
 export interface NebulaClientConfig {
   /** Base URL for Nebula API (default: http://localhost:8000) */
@@ -380,13 +380,18 @@ export class NebulaClient {
       const notebook = result.data!.type === 'notebook'
         ? result.data!.content
         : JSON.parse(result.data!.content);
-      const cells: NotebookCell[] = (notebook.cells || []).map((cell: any, index: number) => ({
-        id: cell.metadata?.nebula_id || `cell-${index}`,
-        type: cell.cell_type === 'code' ? 'code' : 'markdown',
-        content: Array.isArray(cell.source) ? cell.source.join('') : cell.source,
-        outputs: (cell.outputs || []).map((output: any) => this.parseJupyterOutput(output)),
-        executionCount: cell.execution_count,
-      }));
+      const cells: NotebookCell[] = (notebook.cells || []).map((cell: any, index: number) => {
+        // Extract cell metadata, preserving nebula_id separately as the cell id
+        const { nebula_id, ...cellMetadata } = cell.metadata || {};
+        return {
+          id: nebula_id || `cell-${index}`,
+          type: cell.cell_type === 'code' ? 'code' : 'markdown',
+          content: Array.isArray(cell.source) ? cell.source.join('') : cell.source,
+          outputs: (cell.outputs || []).map((output: any) => this.parseJupyterOutput(output)),
+          executionCount: cell.execution_count,
+          metadata: Object.keys(cellMetadata).length > 0 ? cellMetadata : undefined,
+        };
+      });
 
       return {
         success: true,
@@ -412,7 +417,7 @@ export class NebulaClient {
       cells: notebook.cells.map((cell) => ({
         cell_type: cell.type,
         source: cell.content,
-        metadata: { nebula_id: cell.id },
+        metadata: { nebula_id: cell.id, ...cell.metadata },
         outputs: cell.type === 'code' ? (cell.outputs || []).map((o) => this.toJupyterOutput(o)) : undefined,
         execution_count: cell.type === 'code' ? cell.executionCount : undefined,
       })),
@@ -652,6 +657,54 @@ export class NebulaClient {
     }
 
     return { success: true, data: { newCellIndex: newIndex, totalCells: notebook.cells.length } };
+  }
+
+  /**
+   * Get metadata for a specific cell
+   */
+  async getCellMetadata(path: string, cellIndex: number): Promise<ToolResult<CellMetadata>> {
+    const notebookResult = await this.readNotebook(path);
+    if (!notebookResult.success) {
+      return { success: false, error: notebookResult.error };
+    }
+
+    const notebook = notebookResult.data!;
+    if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+      return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+    }
+
+    const cell = notebook.cells[cellIndex];
+    return { success: true, data: cell.metadata || {} };
+  }
+
+  /**
+   * Update metadata for a specific cell (merges with existing metadata)
+   */
+  async setCellMetadata(
+    path: string,
+    cellIndex: number,
+    metadata: Partial<CellMetadata>
+  ): Promise<ToolResult<void>> {
+    const notebookResult = await this.readNotebook(path);
+    if (!notebookResult.success) {
+      return { success: false, error: notebookResult.error };
+    }
+
+    const notebook = notebookResult.data!;
+    if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+      return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+    }
+
+    // Merge new metadata with existing
+    const cell = notebook.cells[cellIndex];
+    cell.metadata = { ...cell.metadata, ...metadata };
+
+    const writeResult = await this.writeNotebook(notebook);
+    if (!writeResult.success) {
+      return { success: false, error: writeResult.error };
+    }
+
+    return { success: true };
   }
 
   /**
