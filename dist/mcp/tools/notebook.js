@@ -32,7 +32,7 @@ export const notebookTools = [
     },
     {
         name: 'read_cell',
-        description: 'Read a specific cell by index with its outputs',
+        description: 'Read a specific cell content and metadata (not outputs). Use read_output to get outputs.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -42,20 +42,51 @@ export const notebookTools = [
                 },
                 cell_index: {
                     type: 'number',
-                    description: 'Cell index (0-based)',
+                    description: 'Cell index (0-based). Use this OR cell_id.',
                 },
-                include_outputs: {
-                    type: 'boolean',
-                    description: 'Include cell outputs (default: true)',
-                    default: true,
+                cell_id: {
+                    type: 'string',
+                    description: 'Stable cell ID (from nebula_id metadata). Use this OR cell_index.',
                 },
             },
-            required: ['path', 'cell_index'],
+            required: ['path'],
+        },
+    },
+    {
+        name: 'read_output',
+        description: 'Read cell outputs for polling execution progress. Use output_offset to skip already-seen outputs. Use timeout to wait for new outputs.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: 'Path to the notebook file',
+                },
+                cell_index: {
+                    type: 'number',
+                    description: 'Cell index (0-based). Use this OR cell_id.',
+                },
+                cell_id: {
+                    type: 'string',
+                    description: 'Stable cell ID (from nebula_id metadata). Use this OR cell_index.',
+                },
+                output_offset: {
+                    type: 'number',
+                    description: 'Skip first N outputs (agent tracks this). Default: 0.',
+                    default: 0,
+                },
+                max_wait: {
+                    type: 'number',
+                    description: 'Wait up to N seconds for new outputs beyond offset. Default: 0 (immediate read).',
+                    default: 0,
+                },
+            },
+            required: ['path'],
         },
     },
     {
         name: 'notebook_write_cell',
-        description: 'Insert or update a cell in a notebook',
+        description: 'Insert or update a cell in a notebook. For new cells, provide a human-readable cell_id. If ID already exists, it will be auto-fixed (e.g., "my-cell" -> "my-cell-2").',
         inputSchema: {
             type: 'object',
             properties: {
@@ -65,7 +96,11 @@ export const notebookTools = [
                 },
                 cell_index: {
                     type: 'number',
-                    description: 'Cell index to update, or -1 to append',
+                    description: 'Cell index to update, or -1 to append new cell',
+                },
+                cell_id: {
+                    type: 'string',
+                    description: 'Human-readable cell ID (required for new cells, i.e., cell_index=-1). Use descriptive names like "load-data" or "train-model".',
                 },
                 content: {
                     type: 'string',
@@ -79,6 +114,28 @@ export const notebookTools = [
                 },
             },
             required: ['path', 'cell_index', 'content'],
+        },
+    },
+    {
+        name: 'update_cell_metadata',
+        description: 'Update cell metadata (id, type, scrolled, scrolledHeight). Validates against Nebula schema. Use to rename cell IDs or change cell properties.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: 'Path to the notebook file',
+                },
+                cell_id: {
+                    type: 'string',
+                    description: 'Current cell ID to update',
+                },
+                changes: {
+                    type: 'object',
+                    description: 'Metadata changes. Keys: id (new ID, auto-fixed if duplicate), type, scrolled, scrolledHeight',
+                },
+            },
+            required: ['path', 'cell_id', 'changes'],
         },
     },
     {
@@ -179,12 +236,13 @@ export async function handleNotebookTool(name, args, client) {
                 const typeIndicator = cell.type === 'code' ? '[code]' : '[md]';
                 const execCount = cell.executionCount ? ` [${cell.executionCount}]` : '';
                 if (format === 'brief') {
-                    const firstLine = cell.content.split('\n')[0].substring(0, 60);
+                    const firstLine = cell.content.split('\n')[0].substring(0, 50);
                     const lineCount = cell.content.split('\n').length;
-                    lines.push(`${i}: ${typeIndicator}${execCount} ${firstLine}${lineCount > 1 ? ` (+${lineCount - 1} lines)` : ''}`);
+                    const lineInfo = lineCount > 1 ? ` (+${lineCount - 1} lines)` : '';
+                    lines.push(`${i}: ${typeIndicator} id=${cell.id}${execCount} ${firstLine}${lineInfo}`);
                 }
                 else {
-                    lines.push(`--- Cell ${i} ${typeIndicator}${execCount} ---`);
+                    lines.push(`--- Cell ${i} ${typeIndicator} id=${cell.id}${execCount} ---`);
                     lines.push(truncateWithHeadTail(cell.content, 50));
                     if (includeOutputs && cell.outputs && cell.outputs.length > 0) {
                         lines.push('Output:');
@@ -205,43 +263,91 @@ export async function handleNotebookTool(name, args, client) {
         case 'read_cell': {
             const path = args.path;
             const cellIndex = args.cell_index;
-            const includeOutputs = args.include_outputs ?? true;
-            const result = await client.readNotebook(path);
+            const cellId = args.cell_id;
+            if (cellIndex === undefined && cellId === undefined) {
+                return errorResponse('Must provide either cell_index or cell_id');
+            }
+            const result = await client.readCell(path, { cellIndex, cellId });
             if (!result.success) {
-                return errorResponse(result.error || 'Failed to read notebook');
+                return errorResponse(result.error || 'Failed to read cell');
             }
-            const notebook = result.data;
-            if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
-                return errorResponse(`Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})`);
-            }
-            const cell = notebook.cells[cellIndex];
+            const cell = result.data;
             const lines = [
-                `Cell ${cellIndex} [${cell.type}]${cell.executionCount ? ` execution #${cell.executionCount}` : ''}`,
+                `Cell ${cell.cellIndex} [${cell.type}] id="${cell.cellId}"${cell.executionCount ? ` execution #${cell.executionCount}` : ''}`,
                 '---',
                 cell.content,
             ];
-            if (includeOutputs && cell.outputs && cell.outputs.length > 0) {
-                lines.push('---', 'Outputs:');
-                const content = [
-                    { type: 'text', text: lines.join('\n') },
-                ];
-                // Add outputs (including images)
-                content.push(...formatOutputs(cell.outputs));
-                return { content };
-            }
             return successResponse(lines.join('\n'));
+        }
+        case 'read_output': {
+            const path = args.path;
+            const cellIndex = args.cell_index;
+            const cellId = args.cell_id;
+            const outputOffset = args.output_offset ?? 0;
+            const maxWait = args.max_wait ?? 0;
+            if (cellIndex === undefined && cellId === undefined) {
+                return errorResponse('Must provide either cell_index or cell_id');
+            }
+            const result = await client.readOutput(path, { cellIndex, cellId, outputOffset, maxWait });
+            if (!result.success) {
+                return errorResponse(result.error || 'Failed to read outputs');
+            }
+            const data = result.data;
+            const outputs = data.outputs;
+            if (outputs.length === 0) {
+                if (data.totalOutputs === 0) {
+                    return successResponse(`Cell ${data.cellId}: No outputs`);
+                }
+                return successResponse(`Cell ${data.cellId}: No new outputs (offset ${outputOffset}, total ${data.totalOutputs})`);
+            }
+            const content = [
+                { type: 'text', text: `Cell ${data.cellId}: ${outputs.length} outputs (offset ${outputOffset}, total ${data.totalOutputs})\n` },
+            ];
+            content.push(...formatOutputs(outputs));
+            return { content };
         }
         case 'notebook_write_cell': {
             const path = args.path;
             const cellIndex = args.cell_index;
             const content = args.content;
             const cellType = args.cell_type ?? 'code';
-            const result = await client.writeCell(path, cellIndex, content, cellType);
+            const cellId = args.cell_id;
+            // Require cell_id for new cells (appending)
+            if (cellIndex === -1 && !cellId) {
+                return errorResponse('cell_id is required when creating new cells (cell_index=-1). Use a descriptive name like "load-data" or "train-model".');
+            }
+            const result = await client.writeCell(path, cellIndex, content, cellType, cellId);
             if (!result.success) {
                 return errorResponse(result.error || 'Failed to write cell');
             }
-            const action = cellIndex === -1 ? 'appended' : 'updated';
-            return successResponse(`Cell ${action} at index ${result.data?.cellIndex ?? cellIndex}`);
+            const data = result.data;
+            const action = cellIndex === -1 ? 'created' : 'updated';
+            let msg = `Cell ${action} at index ${data.cellIndex}, id="${data.cellId}"`;
+            if (data.idModified) {
+                msg += ` (requested "${data.requestedId}" was auto-fixed due to conflict)`;
+            }
+            return successResponse(msg);
+        }
+        case 'update_cell_metadata': {
+            const path = args.path;
+            const cellId = args.cell_id;
+            const changes = args.changes;
+            if (!changes || Object.keys(changes).length === 0) {
+                return errorResponse('No changes provided');
+            }
+            const result = await client.updateCellMetadata(path, cellId, changes);
+            if (!result.success) {
+                return errorResponse(result.error || 'Failed to update metadata');
+            }
+            const data = result.data;
+            const changesSummary = Object.entries(data.changes)
+                .map(([k, v]) => `${k}: ${JSON.stringify(v.old)} → ${JSON.stringify(v.new)}`)
+                .join(', ');
+            let msg = `Cell ${data.cellIndex} metadata updated: ${changesSummary}`;
+            if (data.oldCellId) {
+                msg += ` (ID changed from "${data.oldCellId}" to "${data.cellId}")`;
+            }
+            return successResponse(msg);
         }
         case 'notebook_delete_cell': {
             const path = args.path;

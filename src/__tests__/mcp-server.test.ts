@@ -92,7 +92,7 @@ describe('MCP Server', () => {
       expect(result).toBeDefined();
       expect(result.tools).toBeDefined();
       expect(Array.isArray(result.tools)).toBe(true);
-      expect(result.tools.length).toBe(18); // 6 kernel + 7 notebook + 2 execution + 3 file
+      expect(result.tools.length).toBe(20); // 6 kernel + 9 notebook + 2 execution + 3 file
     });
 
     it('should have correct tool definitions', async () => {

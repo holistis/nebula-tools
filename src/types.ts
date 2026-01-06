@@ -85,6 +85,9 @@ export interface NotebookCell {
   outputs?: CellOutput[];
   executionCount?: number;
   metadata?: CellMetadata;
+  // Convenience properties (also in metadata, but useful at top level)
+  scrolled?: boolean;
+  scrolledHeight?: number;
 }
 
 /**

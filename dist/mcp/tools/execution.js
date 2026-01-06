@@ -7,7 +7,7 @@ import { successResponse, errorResponse, formatOutputs } from '../utils.js';
 export const executionTools = [
     {
         name: 'execute_cell',
-        description: 'Execute a notebook cell by index and return its output. By default, saves the outputs back to the notebook. Requires an active kernel session.',
+        description: 'Execute a notebook cell and return its output. Outputs are saved incrementally during execution so the notebook reflects progress in real-time. Requires an active kernel session.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -17,15 +17,19 @@ export const executionTools = [
                 },
                 cell_index: {
                     type: 'number',
-                    description: 'Cell index to execute (0-based)',
+                    description: 'Cell index to execute (0-based). Use this OR cell_id.',
+                },
+                cell_id: {
+                    type: 'string',
+                    description: 'Stable cell ID (from nebula_id metadata). Use this OR cell_index.',
                 },
                 session_id: {
                     type: 'string',
                     description: 'Kernel session ID. If not provided, will try to get/create one for the notebook.',
                 },
-                timeout: {
+                max_wait: {
                     type: 'number',
-                    description: 'Execution timeout in seconds (default: 60)',
+                    description: 'Max seconds to wait for completion. Execution continues in kernel if exceeded. Default: 60.',
                     default: 60,
                 },
                 save_outputs: {
@@ -34,7 +38,7 @@ export const executionTools = [
                     default: true,
                 },
             },
-            required: ['path', 'cell_index'],
+            required: ['path'],
         },
     },
     {
@@ -66,9 +70,13 @@ export async function handleExecutionTool(name, args, client) {
         case 'execute_cell': {
             const path = args.path;
             const cellIndex = args.cell_index;
+            const cellId = args.cell_id;
             let sessionId = args.session_id;
-            const timeout = args.timeout ?? 60;
+            const maxWait = args.max_wait ?? 60;
             const saveOutputs = args.save_outputs ?? true;
+            if (cellIndex === undefined && cellId === undefined) {
+                return errorResponse('Must provide either cell_index or cell_id');
+            }
             // Get or create kernel session if not provided
             if (!sessionId) {
                 const kernelResult = await client.getOrCreateKernelForFile(path);
@@ -82,22 +90,25 @@ export async function handleExecutionTool(name, args, client) {
             }
             // Execute the cell (reads notebook, executes, saves outputs in one operation)
             const startTime = Date.now();
-            const result = await client.executeCell(path, cellIndex, sessionId, {
-                timeout: timeout * 1000,
+            const result = await client.executeCell(path, sessionId, {
+                cellIndex,
+                cellId,
+                timeout: maxWait * 1000,
                 save: saveOutputs,
             });
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             if (!result.success) {
                 return errorResponse(`Execution failed after ${elapsed}s: ${result.error}`);
             }
+            const cellRef = result.data?.cellId || cellId || `${cellIndex}`;
             const outputs = result.data?.outputs ?? [];
             const savedMsg = saveOutputs ? ' (outputs saved)' : '';
             if (outputs.length === 0) {
-                return successResponse(`Cell ${cellIndex} executed in ${elapsed}s${savedMsg} (no output)`);
+                return successResponse(`Cell ${cellRef} executed in ${elapsed}s${savedMsg} (no output)`);
             }
             // Format outputs
             const content = [
-                { type: 'text', text: `Cell ${cellIndex} executed in ${elapsed}s${savedMsg}:\n` },
+                { type: 'text', text: `Cell ${cellRef} executed in ${elapsed}s${savedMsg}:\n` },
             ];
             content.push(...formatOutputs(outputs));
             return { content };

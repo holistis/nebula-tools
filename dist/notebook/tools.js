@@ -57,10 +57,13 @@ export async function writeNotebookCell(params, client) {
     if (!writeResult.success) {
         return { success: false, error: writeResult.error };
     }
+    const finalIndex = params.cellIndex === -1 ? notebook.cells.length - 1 : params.cellIndex;
+    const finalCellId = notebook.cells[finalIndex].id;
     return {
         success: true,
         data: {
-            cellIndex: params.cellIndex === -1 ? notebook.cells.length - 1 : params.cellIndex,
+            cellIndex: finalIndex,
+            cellId: finalCellId,
             totalCells: notebook.cells.length,
         },
     };

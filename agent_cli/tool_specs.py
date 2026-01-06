@@ -157,7 +157,19 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "additionalProperties": False,
                 },
             },
-            "answers": _prop("object", "Optional prefilled answers mapping.", default={}),
+            "answers": {
+                "type": "array",
+                "description": "Optional prefilled answers (question/answer pairs).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": _prop("string", "Question text to answer."),
+                        "answer": _prop("string", "Answer value."),
+                    },
+                    "required": ["question", "answer"],
+                    "additionalProperties": False,
+                },
+            },
         },
         ["questions"],
         description="Ask the user clarifying questions and capture responses.",

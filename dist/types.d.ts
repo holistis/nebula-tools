@@ -79,6 +79,8 @@ export interface NotebookCell {
     outputs?: CellOutput[];
     executionCount?: number;
     metadata?: CellMetadata;
+    scrolled?: boolean;
+    scrolledHeight?: number;
 }
 /**
  * Cell output representation

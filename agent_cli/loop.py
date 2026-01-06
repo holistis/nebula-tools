@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -29,6 +30,8 @@ class LoopConfig:
     micro_tool_result_chars: int = 4000
     enable_streaming: bool = False
     enable_compaction: bool = True
+    tool_log_path: Optional[str] = None
+    tool_log_max_chars: int = 10_000
 
 
 @dataclass
@@ -142,6 +145,27 @@ def _parse_tool_calls(message: Any) -> List[Dict[str, Any]]:
     return calls
 
 
+def _truncate_log_value(value: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return value
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars] + "...[truncated]"
+
+
+def _append_tool_log(config: LoopConfig, entry: Dict[str, Any]) -> None:
+    if not config.tool_log_path:
+        return
+    try:
+        path = Path(config.tool_log_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        # Best-effort logging; never break the loop.
+        return
+
+
 async def _run_tool(
     ctx: AppContext,
     name: str,
@@ -177,29 +201,65 @@ def _tool_groups(calls: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
     return groups
 
 
-async def _execute_tools(ctx: AppContext, calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+async def _execute_tools(
+    ctx: AppContext,
+    config: LoopConfig,
+    calls: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     for group in _tool_groups(calls):
         if len(group) == 1:
             call = group[0]
+            start = time.time()
             result = await _run_tool(ctx, call["name"], call["args"])
+            duration_ms = int((time.time() - start) * 1000)
+            result_text = stringify_tool_result(result)
+            _append_tool_log(
+                config,
+                {
+                    "type": "tool_call",
+                    "tool": call["name"],
+                    "tool_call_id": call["id"],
+                    "args": call["args"],
+                    "raw_arguments": call.get("raw_arguments"),
+                    "duration_ms": duration_ms,
+                    "result": _truncate_log_value(result_text, config.tool_log_max_chars),
+                    "timestamp": time.time(),
+                },
+            )
             results.append(
                 {
                     "tool_call_id": call["id"],
-                    "content": stringify_tool_result(result),
+                    "content": result_text,
                 }
             )
         else:
+            starts = {call["id"]: time.time() for call in group}
             tasks = [
                 _run_tool(ctx, call["name"], call["args"])
                 for call in group
             ]
             group_results = await asyncio.gather(*tasks)
             for call, result in zip(group, group_results):
+                duration_ms = int((time.time() - starts[call["id"]]) * 1000)
+                result_text = stringify_tool_result(result)
+                _append_tool_log(
+                    config,
+                    {
+                        "type": "tool_call",
+                        "tool": call["name"],
+                        "tool_call_id": call["id"],
+                        "args": call["args"],
+                        "raw_arguments": call.get("raw_arguments"),
+                        "duration_ms": duration_ms,
+                        "result": _truncate_log_value(result_text, config.tool_log_max_chars),
+                        "timestamp": time.time(),
+                    },
+                )
                 results.append(
                     {
                         "tool_call_id": call["id"],
-                        "content": stringify_tool_result(result),
+                        "content": result_text,
                     }
                 )
     return results
@@ -293,7 +353,7 @@ async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
                     print(message.content)
                 break
 
-            tool_results = await _execute_tools(context, tool_calls)
+            tool_results = await _execute_tools(context, config, tool_calls)
             for result in tool_results:
                 state.messages.append(
                     {

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from agents import function_tool, RunContextWrapper, Agent
+from pydantic import BaseModel
 
 from .permissions import AppContext
 from .prompt_loader import load_tool_prompts, load_subagent_prompts
@@ -23,6 +24,29 @@ DEFAULT_LIMIT = 2000
 
 TOOL_PROMPTS = load_tool_prompts()
 SUBAGENT_PROMPTS = load_subagent_prompts()
+
+
+class QuestionOption(BaseModel):
+    label: str
+    description: str
+
+
+class Question(BaseModel):
+    question: str
+    header: str
+    options: List[QuestionOption]
+    multiSelect: bool
+
+
+class AnswerItem(BaseModel):
+    question: str
+    answer: str
+
+
+class TodoItem(BaseModel):
+    content: str
+    status: str
+    activeForm: str
 
 
 @dataclass
@@ -413,7 +437,14 @@ def _subagent_prompt(agent_type: str) -> str:
 
 def _subagent_model(model: Optional[str]) -> str:
     if model:
-        return model
+        cleaned = model.strip()
+        if cleaned:
+            lowered = cleaned.lower()
+            if "claude" in lowered:
+                return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+            if lowered == "gpt-4-mini":
+                return "gpt-4.1-mini"
+            return cleaned
     return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 
 
@@ -558,25 +589,40 @@ async def _task_output(
 
 def _ask_user_question(
     ctx: RunContextWrapper[AppContext],
-    questions: List[Dict[str, Any]],
-    answers: Optional[Dict[str, str]] = None,
+    questions: List["Question"],
+    answers: Optional[List["AnswerItem"]] = None,
 ) -> Dict[str, Any]:
-    if answers:
-        return {"questions": questions, "answers": answers}
+    normalized_questions = [
+        q if isinstance(q, Question) else Question.model_validate(q)
+        for q in questions
+    ]
+    normalized_answers = (
+        [
+            a if isinstance(a, AnswerItem) else AnswerItem.model_validate(a)
+            for a in answers
+        ]
+        if answers
+        else None
+    )
+    if normalized_answers is not None:
+        return {
+            "questions": [q.model_dump() for q in normalized_questions],
+            "answers": {a.question: a.answer for a in normalized_answers or []},
+        }
     resolved: Dict[str, str] = {}
-    for q in questions:
-        header = q.get("header", "Q")
-        prompt = q.get("question", "")
-        options = q.get("options", [])
-        multi = bool(q.get("multiSelect"))
+    for q in normalized_questions:
+        header = q.header or "Q"
+        prompt = q.question
+        options = q.options
+        multi = bool(q.multiSelect)
         print(f"{header}: {prompt}")
         for idx, opt in enumerate(options, start=1):
-            label = opt.get("label", "")
-            desc = opt.get("description", "")
+            label = opt.label
+            desc = opt.description
             print(f"  {idx}. {label} - {desc}".strip())
         raw = input("Select option number(s) or enter text: ").strip()
         if raw.isdigit() and options:
-            choice = options[int(raw) - 1].get("label", "")
+            choice = options[int(raw) - 1].label
             resolved[prompt] = choice
         elif "," in raw and multi and options:
             picks = []
@@ -585,19 +631,23 @@ def _ask_user_question(
                 if part.isdigit():
                     idx = int(part) - 1
                     if 0 <= idx < len(options):
-                        picks.append(options[idx].get("label", ""))
+                        picks.append(options[idx].label)
             resolved[prompt] = ", ".join([p for p in picks if p])
         else:
             resolved[prompt] = raw
-    return {"questions": questions, "answers": resolved}
+    return {"questions": [q.model_dump() for q in normalized_questions], "answers": resolved}
 
 
 def _todo_write(
     ctx: RunContextWrapper[AppContext],
-    todos: List[Dict[str, str]],
+    todos: List["TodoItem"],
 ) -> Dict[str, Any]:
     old = list(ctx.context.todos)
-    ctx.context.todos = list(todos)
+    normalized = [
+        t if isinstance(t, TodoItem) else TodoItem.model_validate(t)
+        for t in todos
+    ]
+    ctx.context.todos = [t.model_dump() for t in normalized]
     return {"oldTodos": old, "newTodos": ctx.context.todos}
 
 
@@ -631,9 +681,6 @@ def _wrap_tool(func, tool_name: str):
         except Exception:
             params = {}
     kwargs = {}
-    if "strict_mode" in params:
-        # Avoid strict schema failures for Dict-typed params in tools.
-        kwargs["strict_mode"] = False
     if "name_override" in params:
         return function_tool(name_override=tool_name, **kwargs)(func)
     if "name" in params:

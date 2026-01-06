@@ -171,12 +171,14 @@ describe('MCP Tool Handlers', () => {
       const result = await handleNotebookTool('notebook_write_cell', {
         path: TEST_NOTEBOOK_PATH,
         cell_index: -1,
+        cell_id: 'test-appended-cell',
         content: 'print("Appended cell")',
         cell_type: 'code',
       }, client);
 
       expect(result.isError).toBeFalsy();
-      expect(result.content[0].text).toContain('appended');
+      expect(result.content[0].text).toContain('created');
+      expect(result.content[0].text).toContain('test-appended-cell');
     });
 
     it('should handle notebook_write_cell (update)', async () => {

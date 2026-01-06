@@ -381,27 +381,57 @@ export class NebulaClient {
     // Notebook Cell Operations
     // ===========================================================================
     /**
-     * Write (insert or update) a cell in a notebook
+     * Check if a cell ID is unique in the notebook
      */
-    async writeCell(path, cellIndex, content, cellType = 'code') {
+    isIdUnique(cells, id) {
+        return !cells.some((c) => c.id === id);
+    }
+    /**
+     * Generate a unique ID by appending a suffix if needed
+     */
+    makeUniqueId(cells, baseId) {
+        if (this.isIdUnique(cells, baseId))
+            return baseId;
+        let suffix = 2;
+        while (!this.isIdUnique(cells, `${baseId}-${suffix}`))
+            suffix++;
+        return `${baseId}-${suffix}`;
+    }
+    /**
+     * Write (insert or update) a cell in a notebook
+     *
+     * For new cells (cellIndex === -1), provide a cellId.
+     * If the ID already exists, it will be auto-fixed (e.g., "my-cell" -> "my-cell-2").
+     */
+    async writeCell(path, cellIndex, content, cellType = 'code', cellId) {
         // Read the notebook first
         const notebookResult = await this.readNotebook(path);
         if (!notebookResult.success) {
             return { success: false, error: notebookResult.error };
         }
         const notebook = notebookResult.data;
-        const newCell = {
-            id: `cell-${Date.now()}`,
-            type: cellType,
-            content,
-        };
+        let finalCellId;
+        let idModified = false;
+        let requestedId;
         if (cellIndex === -1) {
-            // Append to end
+            // Append new cell
+            const baseId = cellId || `cell-${Date.now()}`;
+            finalCellId = this.makeUniqueId(notebook.cells, baseId);
+            idModified = finalCellId !== baseId;
+            if (idModified)
+                requestedId = baseId;
+            const newCell = {
+                id: finalCellId,
+                type: cellType,
+                content,
+            };
             notebook.cells.push(newCell);
         }
         else if (cellIndex >= 0 && cellIndex < notebook.cells.length) {
-            // Update existing cell
-            notebook.cells[cellIndex] = { ...notebook.cells[cellIndex], content, type: cellType };
+            // Update existing cell (preserve ID unless explicitly changing it)
+            const existingCell = notebook.cells[cellIndex];
+            finalCellId = existingCell.id;
+            notebook.cells[cellIndex] = { ...existingCell, content, type: cellType };
         }
         else {
             return { success: false, error: `Cell index ${cellIndex} out of range` };
@@ -415,7 +445,10 @@ export class NebulaClient {
             success: true,
             data: {
                 cellIndex: cellIndex === -1 ? notebook.cells.length - 1 : cellIndex,
+                cellId: finalCellId,
                 totalCells: notebook.cells.length,
+                idModified,
+                requestedId,
             },
         };
     }
@@ -516,7 +549,9 @@ export class NebulaClient {
         return { success: true, data: cell.metadata || {} };
     }
     /**
-     * Update metadata for a specific cell (merges with existing metadata)
+     * Set metadata for a specific cell (merges with existing metadata)
+     *
+     * This is a low-level method. For validated agent operations, use updateCellMetadata.
      */
     async setCellMetadata(path, cellIndex, metadata) {
         const notebookResult = await this.readNotebook(path);
@@ -537,49 +572,379 @@ export class NebulaClient {
         return { success: true };
     }
     /**
+     * Get the metadata schema from Nebula API
+     */
+    async getMetadataSchema() {
+        return this.fetch('/api/cell/metadata-schema');
+    }
+    /**
+     * Update cell metadata (id, type, scrolled, etc.)
+     *
+     * For ID changes, automatically fixes duplicates.
+     * Validates against Nebula's metadata schema.
+     */
+    async updateCellMetadata(path, cellId, changes) {
+        // Get schema for validation
+        const schemaResult = await this.getMetadataSchema();
+        if (!schemaResult.success) {
+            return { success: false, error: `Failed to fetch schema: ${schemaResult.error}` };
+        }
+        const schema = schemaResult.data;
+        // Validate changes against schema
+        for (const [key, value] of Object.entries(changes)) {
+            const fieldSchema = schema[key];
+            if (!fieldSchema) {
+                const allowed = Object.keys(schema).join(', ');
+                return { success: false, error: `Unknown field "${key}". Allowed: ${allowed}` };
+            }
+            if (!fieldSchema.agentMutable) {
+                return { success: false, error: `Field "${key}" is not modifiable` };
+            }
+            // Type validation
+            if (fieldSchema.type === 'string' && typeof value !== 'string') {
+                return { success: false, error: `Field "${key}" must be a string` };
+            }
+            if (fieldSchema.type === 'number' && typeof value !== 'number') {
+                return { success: false, error: `Field "${key}" must be a number` };
+            }
+            if (fieldSchema.type === 'boolean' && typeof value !== 'boolean') {
+                return { success: false, error: `Field "${key}" must be a boolean` };
+            }
+            if (fieldSchema.type === 'enum' && !fieldSchema.values?.includes(value)) {
+                return { success: false, error: `Field "${key}" must be one of: ${fieldSchema.values?.join(', ')}` };
+            }
+        }
+        // Read notebook
+        const notebookResult = await this.readNotebook(path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const notebook = notebookResult.data;
+        const cellIndex = notebook.cells.findIndex((c) => c.id === cellId);
+        if (cellIndex === -1) {
+            return { success: false, error: `Cell with id "${cellId}" not found` };
+        }
+        const cell = notebook.cells[cellIndex];
+        const appliedChanges = {};
+        let newCellId = cellId;
+        // Apply changes
+        for (const [key, newValue] of Object.entries(changes)) {
+            const oldValue = cell[key];
+            if (key === 'id') {
+                // Handle ID change with uniqueness check
+                const requestedId = newValue;
+                const otherCells = notebook.cells.filter((_, i) => i !== cellIndex);
+                newCellId = this.isIdUnique(otherCells, requestedId)
+                    ? requestedId
+                    : this.makeUniqueId(otherCells, requestedId);
+                cell.id = newCellId;
+                appliedChanges[key] = { old: oldValue, new: newCellId };
+            }
+            else if (key === 'type') {
+                cell.type = newValue;
+                appliedChanges[key] = { old: oldValue, new: newValue };
+            }
+            else if (key === 'scrolled') {
+                cell.scrolled = newValue;
+                appliedChanges[key] = { old: oldValue, new: newValue };
+            }
+            else if (key === 'scrolledHeight') {
+                cell.scrolledHeight = newValue;
+                appliedChanges[key] = { old: oldValue, new: newValue };
+            }
+        }
+        // Write back
+        const writeResult = await this.writeNotebook(notebook);
+        if (!writeResult.success) {
+            return { success: false, error: writeResult.error };
+        }
+        return {
+            success: true,
+            data: {
+                cellIndex,
+                cellId: newCellId,
+                oldCellId: newCellId !== cellId ? cellId : undefined,
+                changes: appliedChanges,
+            },
+        };
+    }
+    /**
+     * Read a single cell from a notebook (content and metadata, not outputs)
+     *
+     * Supports both cell_index (positional) and cell_id (stable).
+     * Use readOutput() for outputs.
+     */
+    async readCell(path, options) {
+        const { cellIndex, cellId } = options;
+        if (cellIndex === undefined && cellId === undefined) {
+            return { success: false, error: 'Must provide either cellIndex or cellId' };
+        }
+        const notebookResult = await this.readNotebook(path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const notebook = notebookResult.data;
+        let cell;
+        let foundIndex = -1;
+        if (cellId !== undefined) {
+            foundIndex = notebook.cells.findIndex(c => c.id === cellId);
+            if (foundIndex === -1) {
+                return { success: false, error: `Cell with id '${cellId}' not found` };
+            }
+            cell = notebook.cells[foundIndex];
+        }
+        else {
+            if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+                return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+            }
+            foundIndex = cellIndex;
+            cell = notebook.cells[foundIndex];
+        }
+        return {
+            success: true,
+            data: {
+                cellIndex: foundIndex,
+                cellId: cell.id,
+                type: cell.type,
+                content: cell.content,
+                executionCount: cell.executionCount,
+            },
+        };
+    }
+    /**
+     * Read cell outputs for polling execution progress
+     *
+     * Supports both cell_index (positional) and cell_id (stable).
+     * Use outputOffset to skip outputs already seen.
+     * Use maxWait to wait for new outputs (polls every 500ms).
+     */
+    async readOutput(path, options) {
+        const { cellIndex, cellId, outputOffset = 0, maxWait = 0 } = options;
+        if (cellIndex === undefined && cellId === undefined) {
+            return { success: false, error: 'Must provide either cellIndex or cellId' };
+        }
+        const startTime = Date.now();
+        const pollInterval = 500; // ms
+        // Poll loop for waiting
+        while (true) {
+            const notebookResult = await this.readNotebook(path);
+            if (!notebookResult.success) {
+                return { success: false, error: notebookResult.error };
+            }
+            const notebook = notebookResult.data;
+            let cell;
+            let foundIndex = -1;
+            if (cellId !== undefined) {
+                foundIndex = notebook.cells.findIndex(c => c.id === cellId);
+                if (foundIndex === -1) {
+                    return { success: false, error: `Cell with id '${cellId}' not found` };
+                }
+                cell = notebook.cells[foundIndex];
+            }
+            else {
+                if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+                    return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+                }
+                foundIndex = cellIndex;
+                cell = notebook.cells[foundIndex];
+            }
+            const allOutputs = cell.outputs || [];
+            const newOutputs = outputOffset > 0 ? allOutputs.slice(outputOffset) : allOutputs;
+            // Return if we have new outputs or not waiting
+            if (newOutputs.length > 0 || maxWait <= 0) {
+                return {
+                    success: true,
+                    data: {
+                        cellId: cell.id,
+                        cellIndex: foundIndex,
+                        outputs: newOutputs,
+                        totalOutputs: allOutputs.length,
+                    },
+                };
+            }
+            // Check if we've exceeded max wait
+            const elapsed = (Date.now() - startTime) / 1000;
+            if (elapsed >= maxWait) {
+                return {
+                    success: true,
+                    data: {
+                        cellId: cell.id,
+                        cellIndex: foundIndex,
+                        outputs: [],
+                        totalOutputs: allOutputs.length,
+                    },
+                };
+            }
+            // Wait before next poll
+            await this.delay(pollInterval);
+        }
+    }
+    /**
      * Execute a cell in a notebook and save the outputs back
      *
      * This combines read -> execute -> save into a single operation,
      * eliminating round-trips for the common iterative workflow.
+     *
+     * Supports both cellIndex (positional) and cellId (stable).
+     * When save is true, outputs are saved incrementally during execution
+     * so the notebook file reflects progress in real-time.
      */
-    async executeCell(path, cellIndex, sessionId, options = {}) {
-        const { timeout = 60000, save = true } = options;
+    async executeCell(path, sessionId, options = {}) {
+        const { cellIndex, cellId, timeout = 60000, save = true, saveIntervalMs = 2000 } = options;
+        if (cellIndex === undefined && cellId === undefined) {
+            return { success: false, error: 'Must provide either cellIndex or cellId' };
+        }
         // Read the notebook
         const notebookResult = await this.readNotebook(path);
         if (!notebookResult.success) {
             return { success: false, error: notebookResult.error };
         }
         const notebook = notebookResult.data;
-        if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
-            return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
-        }
-        const cell = notebook.cells[cellIndex];
-        if (cell.type !== 'code') {
-            return { success: false, error: `Cell ${cellIndex} is not a code cell (type: ${cell.type})` };
-        }
-        // Execute the cell
-        const execResult = await this.executeCodeStreaming(sessionId, cell.content, timeout);
-        if (!execResult.success) {
-            return { success: false, error: execResult.error };
-        }
-        // Update cell with outputs
-        cell.outputs = execResult.data.outputs;
-        cell.executionCount = execResult.data.executionCount;
-        // Save the notebook with updated outputs
-        if (save) {
-            const writeResult = await this.writeNotebook(notebook);
-            if (!writeResult.success) {
-                return { success: false, error: `Execution succeeded but save failed: ${writeResult.error}` };
+        let foundIndex = -1;
+        let cell;
+        if (cellId !== undefined) {
+            foundIndex = notebook.cells.findIndex(c => c.id === cellId);
+            if (foundIndex === -1) {
+                return { success: false, error: `Cell with id '${cellId}' not found` };
             }
+            cell = notebook.cells[foundIndex];
         }
+        else {
+            if (cellIndex < 0 || cellIndex >= notebook.cells.length) {
+                return { success: false, error: `Cell index ${cellIndex} out of range (0-${notebook.cells.length - 1})` };
+            }
+            foundIndex = cellIndex;
+            cell = notebook.cells[foundIndex];
+        }
+        if (cell.type !== 'code') {
+            return { success: false, error: `Cell ${foundIndex} is not a code cell (type: ${cell.type})` };
+        }
+        // Execute with incremental saves
+        const result = await this.executeWithIncrementalSave(sessionId, cell.content, notebook, foundIndex, { timeout, save, saveIntervalMs });
         return {
-            success: execResult.data.success,
-            data: {
-                ...execResult.data,
-                cellIndex,
-            },
-            error: execResult.data.error,
+            success: result.success,
+            data: result.data ? {
+                ...result.data,
+                cellIndex: foundIndex,
+                cellId: cell.id,
+            } : undefined,
+            error: result.error,
         };
+    }
+    /**
+     * Execute code with incremental saves to notebook
+     */
+    async executeWithIncrementalSave(sessionId, code, notebook, cellIndex, options) {
+        const { timeout, save, saveIntervalMs } = options;
+        return new Promise((resolve) => {
+            const wsUrl = this.baseUrl.replace(/^http/, 'ws') + `/api/kernels/${sessionId}/ws`;
+            const outputs = [];
+            let executionCount;
+            let hasError = false;
+            let errorMessage;
+            let lastSaveTime = Date.now();
+            let saveTimer;
+            const cell = notebook.cells[cellIndex];
+            const saveNotebook = async () => {
+                if (!save)
+                    return;
+                cell.outputs = [...outputs];
+                cell.executionCount = executionCount;
+                await this.writeNotebook(notebook);
+                lastSaveTime = Date.now();
+            };
+            const connectWs = async () => {
+                try {
+                    const WebSocketImpl = typeof WebSocket !== 'undefined' ? WebSocket : (await import('ws')).default;
+                    const ws = new WebSocketImpl(wsUrl);
+                    const timeoutTimer = setTimeout(async () => {
+                        if (saveTimer)
+                            clearInterval(saveTimer);
+                        await saveNotebook(); // Final save before closing
+                        ws.close();
+                        resolve({
+                            success: true, // Timeout is not an error, just incomplete
+                            data: { outputs, success: true, executionCount },
+                        });
+                    }, timeout);
+                    // Set up periodic save interval
+                    if (save) {
+                        saveTimer = setInterval(async () => {
+                            if (outputs.length > 0 && Date.now() - lastSaveTime >= saveIntervalMs) {
+                                await saveNotebook();
+                            }
+                        }, saveIntervalMs);
+                    }
+                    ws.onopen = () => {
+                        ws.send(JSON.stringify({ type: 'execute', code }));
+                    };
+                    ws.onmessage = (event) => {
+                        try {
+                            const data = typeof event.data === 'string' ? event.data : event.data.toString();
+                            const msg = JSON.parse(data);
+                            if (msg.type === 'output') {
+                                outputs.push(this.parseJupyterOutput(msg.output));
+                            }
+                            else if (msg.type === 'result') {
+                                executionCount = msg.result?.execution_count;
+                                if (msg.result?.outputs) {
+                                    outputs.push(...msg.result.outputs.map((o) => this.parseJupyterOutput(o)));
+                                }
+                            }
+                            else if (msg.type === 'error') {
+                                hasError = true;
+                                errorMessage = msg.error;
+                                outputs.push({ type: 'error', content: msg.error || 'Unknown error' });
+                            }
+                            else if (msg.type === 'status' && msg.status === 'idle') {
+                                clearTimeout(timeoutTimer);
+                                if (saveTimer)
+                                    clearInterval(saveTimer);
+                                // Final save
+                                (async () => {
+                                    await saveNotebook();
+                                    ws.close();
+                                    resolve({
+                                        success: !hasError,
+                                        data: { outputs, success: !hasError, executionCount, error: errorMessage },
+                                    });
+                                })();
+                            }
+                        }
+                        catch (e) {
+                            // Ignore parse errors for non-JSON messages
+                        }
+                    };
+                    ws.onerror = async (error) => {
+                        clearTimeout(timeoutTimer);
+                        if (saveTimer)
+                            clearInterval(saveTimer);
+                        await saveNotebook(); // Save what we have
+                        ws.close();
+                        resolve({
+                            success: false,
+                            error: `WebSocket error: ${error.message || 'Unknown error'}`,
+                        });
+                    };
+                    ws.onclose = () => {
+                        clearTimeout(timeoutTimer);
+                        if (saveTimer)
+                            clearInterval(saveTimer);
+                    };
+                }
+                catch (e) {
+                    // Fall back to non-incremental execution
+                    const result = await this.executeCodeStreaming(sessionId, code, timeout);
+                    if (result.success && save) {
+                        cell.outputs = result.data.outputs;
+                        cell.executionCount = result.data.executionCount;
+                        await this.writeNotebook(notebook);
+                    }
+                    resolve(result);
+                }
+            };
+            connectWs();
+        });
     }
     /**
      * Search cells in a notebook by keyword

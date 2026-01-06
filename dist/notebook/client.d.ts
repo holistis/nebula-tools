@@ -37,7 +37,19 @@ export interface ExecutionResult {
 }
 export interface WriteCellResult {
     cellIndex: number;
+    cellId: string;
     totalCells: number;
+    idModified?: boolean;
+    requestedId?: string;
+}
+export interface MetadataSchema {
+    [key: string]: {
+        type: 'string' | 'number' | 'boolean' | 'enum';
+        values?: string[];
+        description: string;
+        agentMutable: boolean;
+        default?: unknown;
+    };
 }
 export interface SearchResult {
     cells: Array<{
@@ -135,9 +147,20 @@ export declare class NebulaClient {
      */
     writeFile(path: string, content: string): Promise<ToolResult<void>>;
     /**
-     * Write (insert or update) a cell in a notebook
+     * Check if a cell ID is unique in the notebook
      */
-    writeCell(path: string, cellIndex: number, content: string, cellType?: 'code' | 'markdown'): Promise<ToolResult<WriteCellResult>>;
+    private isIdUnique;
+    /**
+     * Generate a unique ID by appending a suffix if needed
+     */
+    private makeUniqueId;
+    /**
+     * Write (insert or update) a cell in a notebook
+     *
+     * For new cells (cellIndex === -1), provide a cellId.
+     * If the ID already exists, it will be auto-fixed (e.g., "my-cell" -> "my-cell-2").
+     */
+    writeCell(path: string, cellIndex: number, content: string, cellType?: 'code' | 'markdown', cellId?: string): Promise<ToolResult<WriteCellResult>>;
     /**
      * Delete a cell from a notebook
      */
@@ -162,21 +185,88 @@ export declare class NebulaClient {
      */
     getCellMetadata(path: string, cellIndex: number): Promise<ToolResult<CellMetadata>>;
     /**
-     * Update metadata for a specific cell (merges with existing metadata)
+     * Set metadata for a specific cell (merges with existing metadata)
+     *
+     * This is a low-level method. For validated agent operations, use updateCellMetadata.
      */
     setCellMetadata(path: string, cellIndex: number, metadata: Partial<CellMetadata>): Promise<ToolResult<void>>;
+    /**
+     * Get the metadata schema from Nebula API
+     */
+    getMetadataSchema(): Promise<ToolResult<MetadataSchema>>;
+    /**
+     * Update cell metadata (id, type, scrolled, etc.)
+     *
+     * For ID changes, automatically fixes duplicates.
+     * Validates against Nebula's metadata schema.
+     */
+    updateCellMetadata(path: string, cellId: string, changes: Record<string, unknown>): Promise<ToolResult<{
+        cellIndex: number;
+        cellId: string;
+        oldCellId?: string;
+        changes: Record<string, {
+            old: unknown;
+            new: unknown;
+        }>;
+    }>>;
+    /**
+     * Read a single cell from a notebook (content and metadata, not outputs)
+     *
+     * Supports both cell_index (positional) and cell_id (stable).
+     * Use readOutput() for outputs.
+     */
+    readCell(path: string, options: {
+        cellIndex?: number;
+        cellId?: string;
+    }): Promise<ToolResult<{
+        cellIndex: number;
+        cellId: string;
+        type: 'code' | 'markdown';
+        content: string;
+        executionCount?: number;
+    }>>;
+    /**
+     * Read cell outputs for polling execution progress
+     *
+     * Supports both cell_index (positional) and cell_id (stable).
+     * Use outputOffset to skip outputs already seen.
+     * Use maxWait to wait for new outputs (polls every 500ms).
+     */
+    readOutput(path: string, options: {
+        cellIndex?: number;
+        cellId?: string;
+        outputOffset?: number;
+        maxWait?: number;
+    }): Promise<ToolResult<{
+        cellId: string;
+        cellIndex: number;
+        outputs: CellOutput[];
+        totalOutputs: number;
+    }>>;
     /**
      * Execute a cell in a notebook and save the outputs back
      *
      * This combines read -> execute -> save into a single operation,
      * eliminating round-trips for the common iterative workflow.
+     *
+     * Supports both cellIndex (positional) and cellId (stable).
+     * When save is true, outputs are saved incrementally during execution
+     * so the notebook file reflects progress in real-time.
      */
-    executeCell(path: string, cellIndex: number, sessionId: string, options?: {
+    executeCell(path: string, sessionId: string, options?: {
+        cellIndex?: number;
+        cellId?: string;
         timeout?: number;
         save?: boolean;
+        saveIntervalMs?: number;
     }): Promise<ToolResult<ExecutionResult & {
         cellIndex: number;
+        cellId: string;
     }>>;
+    /**
+     * Execute code with incremental saves to notebook
+     */
+    private executeWithIncrementalSave;
     /**
      * Search cells in a notebook by keyword
      */

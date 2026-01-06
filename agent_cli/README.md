@@ -25,6 +25,7 @@ Options:
 - `--permission-mode`: `ask|allow|deny` (default: `ask`)
 - `--auto-approve`: auto-approve tool calls in ask mode
 - `--fallback-model`: fallback model name (optional)
+- `--tool-log`: write JSONL tool call logs to the given path (optional)
 
 ## Notes
 - No MCP servers or hooks are used.
