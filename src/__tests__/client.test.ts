@@ -106,7 +106,7 @@ describe('NebulaClient', () => {
       await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for restart
       const varResult = await client.executeCodeStreaming(sessionId, 'print(test_var)', 30000);
       expect(varResult.data!.outputs.some(o => o.content.includes('NameError') || o.type === 'error')).toBe(true);
-    });
+    }, 45000); // Kernel restart can take time
 
     it('should shutdown a kernel', async () => {
       const result = await client.shutdownKernel(sessionId);
@@ -273,6 +273,166 @@ describe('NebulaClient', () => {
     it('should handle non-existent notebook', async () => {
       const result = await client.readNotebook('/tmp/nonexistent-notebook-12345.ipynb');
       expect(result.success).toBe(false);
+    });
+  });
+
+  // ===========================================================================
+  // Cell Reordering Tests
+  // ===========================================================================
+  describe('Cell Reordering', () => {
+    const REORDER_NOTEBOOK_PATH = '/tmp/reorder-test-notebook.ipynb';
+
+    beforeAll(async () => {
+      // Create a test notebook with 4 cells: [A, B, C, D]
+      const notebook = {
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: { language_info: { name: 'python' } },
+        cells: [
+          { cell_type: 'code', source: 'cell_A = "A"', metadata: {}, outputs: [], execution_count: null },
+          { cell_type: 'code', source: 'cell_B = "B"', metadata: {}, outputs: [], execution_count: null },
+          { cell_type: 'code', source: 'cell_C = "C"', metadata: {}, outputs: [], execution_count: null },
+          { cell_type: 'code', source: 'cell_D = "D"', metadata: {}, outputs: [], execution_count: null },
+        ],
+      };
+      await client.writeFile(REORDER_NOTEBOOK_PATH, JSON.stringify(notebook, null, 2));
+    });
+
+    it('should move a cell down (0 -> 2)', async () => {
+      // [A,B,C,D] -> [B,C,A,D]
+      const result = await client.moveCell(REORDER_NOTEBOOK_PATH, 0, 2);
+      expect(result.success).toBe(true);
+      expect(result.data!.totalCells).toBe(4);
+
+      // Verify the order
+      const notebook = await client.readNotebook(REORDER_NOTEBOOK_PATH);
+      expect(notebook.data!.cells[0].content).toContain('cell_B');
+      expect(notebook.data!.cells[1].content).toContain('cell_C');
+      expect(notebook.data!.cells[2].content).toContain('cell_A');
+      expect(notebook.data!.cells[3].content).toContain('cell_D');
+    });
+
+    it('should move a cell up (3 -> 0)', async () => {
+      // Current: [B,C,A,D] -> [D,B,C,A]
+      const result = await client.moveCell(REORDER_NOTEBOOK_PATH, 3, 0);
+      expect(result.success).toBe(true);
+
+      // Verify the order
+      const notebook = await client.readNotebook(REORDER_NOTEBOOK_PATH);
+      expect(notebook.data!.cells[0].content).toContain('cell_D');
+      expect(notebook.data!.cells[1].content).toContain('cell_B');
+      expect(notebook.data!.cells[2].content).toContain('cell_C');
+      expect(notebook.data!.cells[3].content).toContain('cell_A');
+    });
+
+    it('should handle move to same position (no-op)', async () => {
+      // Get current state
+      const before = await client.readNotebook(REORDER_NOTEBOOK_PATH);
+      const beforeContent = before.data!.cells.map(c => c.content);
+
+      // Move cell 1 to position 1 (no change)
+      const result = await client.moveCell(REORDER_NOTEBOOK_PATH, 1, 1);
+      expect(result.success).toBe(true);
+
+      // Verify nothing changed
+      const after = await client.readNotebook(REORDER_NOTEBOOK_PATH);
+      const afterContent = after.data!.cells.map(c => c.content);
+      expect(afterContent).toEqual(beforeContent);
+    });
+
+    it('should reject invalid source index', async () => {
+      const result = await client.moveCell(REORDER_NOTEBOOK_PATH, 99, 0);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('out of range');
+    });
+
+    it('should reject invalid target index', async () => {
+      const result = await client.moveCell(REORDER_NOTEBOOK_PATH, 0, -5);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('out of range');
+    });
+
+    it('should reject target index beyond bounds', async () => {
+      const result = await client.moveCell(REORDER_NOTEBOOK_PATH, 0, 99);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('out of range');
+    });
+  });
+
+  // ===========================================================================
+  // Cell Duplication Tests
+  // ===========================================================================
+  describe('Cell Duplication', () => {
+    const DUP_NOTEBOOK_PATH = '/tmp/duplicate-test-notebook.ipynb';
+
+    beforeAll(async () => {
+      // Create a test notebook with 3 cells
+      const notebook = {
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: { language_info: { name: 'python' } },
+        cells: [
+          { cell_type: 'code', source: 'cell_0 = "zero"', metadata: {}, outputs: [], execution_count: null },
+          { cell_type: 'markdown', source: '# Cell One Markdown', metadata: {} },
+          { cell_type: 'code', source: 'cell_2 = "two"', metadata: {}, outputs: [], execution_count: null },
+        ],
+      };
+      await client.writeFile(DUP_NOTEBOOK_PATH, JSON.stringify(notebook, null, 2));
+    });
+
+    it('should duplicate a cell at next position', async () => {
+      // Duplicate cell 0: [0, 1, 2] -> [0, 0', 1, 2]
+      const result = await client.duplicateCell(DUP_NOTEBOOK_PATH, 0);
+      expect(result.success).toBe(true);
+      expect(result.data!.newCellIndex).toBe(1);
+      expect(result.data!.totalCells).toBe(4);
+
+      // Verify the duplication
+      const notebook = await client.readNotebook(DUP_NOTEBOOK_PATH);
+      expect(notebook.data!.cells.length).toBe(4);
+      expect(notebook.data!.cells[0].content).toBe(notebook.data!.cells[1].content);
+    });
+
+    it('should preserve cell content and type', async () => {
+      // Read to get current state after previous test
+      const before = await client.readNotebook(DUP_NOTEBOOK_PATH);
+      const originalCell = before.data!.cells[2]; // The markdown cell
+
+      // Duplicate the markdown cell
+      const result = await client.duplicateCell(DUP_NOTEBOOK_PATH, 2);
+      expect(result.success).toBe(true);
+
+      // Verify content and type match
+      const after = await client.readNotebook(DUP_NOTEBOOK_PATH);
+      const duplicatedCell = after.data!.cells[3];
+      expect(duplicatedCell.content).toBe(originalCell.content);
+      expect(duplicatedCell.type).toBe(originalCell.type);
+    });
+
+    it('should generate new cell ID', async () => {
+      const before = await client.readNotebook(DUP_NOTEBOOK_PATH);
+      const originalId = before.data!.cells[0].id;
+
+      // Duplicate cell 0
+      await client.duplicateCell(DUP_NOTEBOOK_PATH, 0);
+
+      const after = await client.readNotebook(DUP_NOTEBOOK_PATH);
+      const duplicatedId = after.data!.cells[1].id;
+
+      // IDs should be different
+      expect(duplicatedId).not.toBe(originalId);
+    });
+
+    it('should reject invalid index', async () => {
+      const result = await client.duplicateCell(DUP_NOTEBOOK_PATH, 99);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('out of range');
+    });
+
+    it('should reject negative index', async () => {
+      const result = await client.duplicateCell(DUP_NOTEBOOK_PATH, -1);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('out of range');
     });
   });
 

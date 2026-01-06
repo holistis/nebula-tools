@@ -252,6 +252,92 @@ describe('MCP Tool Handlers', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('Unknown notebook tool');
     });
+
+    it('should handle notebook_move_cell', async () => {
+      // Create a test notebook for move operations
+      const moveTestPath = '/tmp/mcp-move-test.ipynb';
+      const notebook = {
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: [
+          { cell_type: 'code', source: 'first', metadata: {}, outputs: [] },
+          { cell_type: 'code', source: 'second', metadata: {}, outputs: [] },
+          { cell_type: 'code', source: 'third', metadata: {}, outputs: [] },
+        ],
+      };
+      await client.writeFile(moveTestPath, JSON.stringify(notebook, null, 2));
+
+      // Move cell 0 to position 2
+      const result = await handleNotebookTool('notebook_move_cell', {
+        path: moveTestPath,
+        from_index: 0,
+        to_index: 2,
+      }, client);
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain('moved');
+      expect(result.content[0].text).toContain('0');
+      expect(result.content[0].text).toContain('2');
+    });
+
+    it('should handle notebook_move_cell same position', async () => {
+      const result = await handleNotebookTool('notebook_move_cell', {
+        path: '/tmp/mcp-move-test.ipynb',
+        from_index: 1,
+        to_index: 1,
+      }, client);
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain('no change');
+    });
+
+    it('should handle notebook_move_cell invalid index', async () => {
+      const result = await handleNotebookTool('notebook_move_cell', {
+        path: '/tmp/mcp-move-test.ipynb',
+        from_index: 99,
+        to_index: 0,
+      }, client);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('out of range');
+    });
+
+    it('should handle notebook_duplicate_cell', async () => {
+      // Create a test notebook for duplicate operations
+      const dupTestPath = '/tmp/mcp-dup-test.ipynb';
+      const notebook = {
+        nbformat: 4,
+        nbformat_minor: 5,
+        metadata: {},
+        cells: [
+          { cell_type: 'code', source: 'original', metadata: {}, outputs: [] },
+          { cell_type: 'markdown', source: '# Header', metadata: {} },
+        ],
+      };
+      await client.writeFile(dupTestPath, JSON.stringify(notebook, null, 2));
+
+      // Duplicate cell 0
+      const result = await handleNotebookTool('notebook_duplicate_cell', {
+        path: dupTestPath,
+        cell_index: 0,
+      }, client);
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain('duplicated');
+      expect(result.content[0].text).toContain('position 1');
+      expect(result.content[0].text).toContain('3 cells');
+    });
+
+    it('should handle notebook_duplicate_cell invalid index', async () => {
+      const result = await handleNotebookTool('notebook_duplicate_cell', {
+        path: '/tmp/mcp-dup-test.ipynb',
+        cell_index: 99,
+      }, client);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('out of range');
+    });
   });
 
   // ===========================================================================

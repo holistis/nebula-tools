@@ -572,6 +572,89 @@ export class NebulaClient {
   }
 
   /**
+   * Move a cell from one position to another within a notebook
+   */
+  async moveCell(
+    path: string,
+    fromIndex: number,
+    toIndex: number
+  ): Promise<ToolResult<{ totalCells: number }>> {
+    const notebookResult = await this.readNotebook(path);
+    if (!notebookResult.success) {
+      return { success: false, error: notebookResult.error };
+    }
+
+    const notebook = notebookResult.data!;
+    const cellCount = notebook.cells.length;
+
+    // Validate indices
+    if (fromIndex < 0 || fromIndex >= cellCount) {
+      return { success: false, error: `Source index ${fromIndex} out of range (0-${cellCount - 1})` };
+    }
+    if (toIndex < 0 || toIndex >= cellCount) {
+      return { success: false, error: `Target index ${toIndex} out of range (0-${cellCount - 1})` };
+    }
+
+    // No-op if same position
+    if (fromIndex === toIndex) {
+      return { success: true, data: { totalCells: cellCount } };
+    }
+
+    // Remove the cell from its current position
+    const [cell] = notebook.cells.splice(fromIndex, 1);
+    // Insert at the new position
+    notebook.cells.splice(toIndex, 0, cell);
+
+    const writeResult = await this.writeNotebook(notebook);
+    if (!writeResult.success) {
+      return { success: false, error: writeResult.error };
+    }
+
+    return { success: true, data: { totalCells: notebook.cells.length } };
+  }
+
+  /**
+   * Duplicate a cell, inserting the copy after the original
+   */
+  async duplicateCell(
+    path: string,
+    cellIndex: number
+  ): Promise<ToolResult<{ newCellIndex: number; totalCells: number }>> {
+    const notebookResult = await this.readNotebook(path);
+    if (!notebookResult.success) {
+      return { success: false, error: notebookResult.error };
+    }
+
+    const notebook = notebookResult.data!;
+    const cellCount = notebook.cells.length;
+
+    // Validate index
+    if (cellIndex < 0 || cellIndex >= cellCount) {
+      return { success: false, error: `Cell index ${cellIndex} out of range (0-${cellCount - 1})` };
+    }
+
+    // Clone the cell with a new ID
+    const originalCell = notebook.cells[cellIndex];
+    const newCell = {
+      ...originalCell,
+      id: `cell-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      outputs: originalCell.outputs ? [...originalCell.outputs] : undefined,
+      executionCount: undefined, // Reset execution count for the copy
+    };
+
+    // Insert after the original cell
+    const newIndex = cellIndex + 1;
+    notebook.cells.splice(newIndex, 0, newCell);
+
+    const writeResult = await this.writeNotebook(notebook);
+    if (!writeResult.success) {
+      return { success: false, error: writeResult.error };
+    }
+
+    return { success: true, data: { newCellIndex: newIndex, totalCells: notebook.cells.length } };
+  }
+
+  /**
    * Execute a cell in a notebook and save the outputs back
    *
    * This combines read -> execute -> save into a single operation,
