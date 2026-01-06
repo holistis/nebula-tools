@@ -79,7 +79,7 @@ describe('MCP Tool Handlers', () => {
       if (match) {
         sessionId = match[1];
       }
-    });
+    }, 30000); // Kernel startup can take longer than default 5s
 
     it('should handle kernel_restart', async () => {
       if (!sessionId) return;

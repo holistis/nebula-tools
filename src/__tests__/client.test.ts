@@ -49,7 +49,7 @@ describe('NebulaClient', () => {
       expect(result.data!.sessionId).toBeDefined();
       expect(result.data!.kernelName).toBe('python3');
       sessionId = result.data!.sessionId;
-    });
+    }, 30000); // Kernel startup can take time
 
     it('should list sessions and find the new session', async () => {
       const result = await client.listSessions();
@@ -63,7 +63,7 @@ describe('NebulaClient', () => {
       expect(result.data).toBeDefined();
       expect(result.data!.outputs.length).toBeGreaterThan(0);
       expect(result.data!.outputs.some(o => o.content.includes('Hello, World!'))).toBe(true);
-    });
+    }, 35000); // Allow time for execution
 
     it('should execute code that returns a value', async () => {
       const result = await client.executeCodeStreaming(sessionId, '2 + 2', 30000);
@@ -239,10 +239,11 @@ describe('NebulaClient', () => {
     });
 
     it('should search cells by keyword', async () => {
-      const result = await client.searchCells(TEST_NOTEBOOK_PATH, 'pandas', 5);
+      // Search for 'calculate' which is in cell 4 and not modified by previous tests
+      const result = await client.searchCells(TEST_NOTEBOOK_PATH, 'calculate', 5);
       expect(result.success).toBe(true);
       expect(result.data!.cells.length).toBeGreaterThan(0);
-      expect(result.data!.cells[0].content.toLowerCase()).toContain('pandas');
+      expect(result.data!.cells[0].content.toLowerCase()).toContain('calculate');
     });
 
     it('should search cells with multiple keywords', async () => {

@@ -35,9 +35,12 @@ describe('NebulaClient', () => {
 
   describe('listKernels', () => {
     it('should return available kernels', async () => {
+      // API returns { kernels: Array<{ name: string }> }
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ['python3', 'ir', 'julia'],
+        json: async () => ({
+          kernels: [{ name: 'python3' }, { name: 'ir' }, { name: 'julia' }],
+        }),
       });
 
       const result = await client.listKernels();
@@ -51,13 +54,15 @@ describe('NebulaClient', () => {
     });
 
     it('should handle API errors', async () => {
+      // Create a client with no retries for error testing
+      const errorClient = createNebulaClient({ baseUrl: 'http://localhost:8000', retries: 1 });
       mockFetch.mockResolvedValueOnce({
         ok: false,
         status: 500,
         text: async () => 'Internal Server Error',
       });
 
-      const result = await client.listKernels();
+      const result = await errorClient.listKernels();
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('500');
@@ -66,12 +71,12 @@ describe('NebulaClient', () => {
 
   describe('startKernel', () => {
     it('should start a kernel session', async () => {
+      // API returns { session_id, kernel_name } (snake_case)
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          sessionId: 'session-123',
-          kernelName: 'python3',
-          status: 'idle',
+          session_id: 'session-123',
+          kernel_name: 'python3',
         }),
       });
 
@@ -92,7 +97,7 @@ describe('NebulaClient', () => {
     it('should use default kernel name', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ sessionId: 'session-456', kernelName: 'python3', status: 'idle' }),
+        json: async () => ({ session_id: 'session-456', kernel_name: 'python3' }),
       });
 
       await client.startKernel();
@@ -159,9 +164,10 @@ describe('NebulaClient', () => {
       const result = await client.shutdownKernel('session-123');
 
       expect(result.success).toBe(true);
+      // shutdownKernel uses DELETE method to /api/kernels/{sessionId}
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:8000/api/kernels/session-123/shutdown',
-        expect.objectContaining({ method: 'POST' })
+        'http://localhost:8000/api/kernels/session-123',
+        expect.objectContaining({ method: 'DELETE' })
       );
     });
   });
@@ -188,9 +194,14 @@ describe('NebulaClient', () => {
     });
 
     it('should read and parse notebook', async () => {
+      // API returns { path, type, content } where content is parsed JSON for notebooks
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ content: mockNotebookContent }),
+        json: async () => ({
+          path: '/path/to/notebook.ipynb',
+          type: 'notebook',
+          content: JSON.parse(mockNotebookContent),
+        }),
       });
 
       const result = await client.readNotebook('/path/to/notebook.ipynb');
@@ -204,7 +215,7 @@ describe('NebulaClient', () => {
     });
 
     it('should parse different output types', async () => {
-      const notebookWithOutputs = JSON.stringify({
+      const notebookWithOutputs = {
         nbformat: 4,
         nbformat_minor: 5,
         cells: [
@@ -221,11 +232,15 @@ describe('NebulaClient', () => {
             ],
           },
         ],
-      });
+      };
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ content: notebookWithOutputs }),
+        json: async () => ({
+          path: '/path/to/notebook.ipynb',
+          type: 'notebook',
+          content: notebookWithOutputs,
+        }),
       });
 
       const result = await client.readNotebook('/path/to/notebook.ipynb');
@@ -241,9 +256,14 @@ describe('NebulaClient', () => {
     });
 
     it('should handle invalid JSON', async () => {
+      // For text type, content is a string that gets JSON.parsed
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ content: 'not valid json' }),
+        json: async () => ({
+          path: '/path/to/notebook.ipynb',
+          type: 'text',
+          content: 'not valid json',
+        }),
       });
 
       const result = await client.readNotebook('/path/to/notebook.ipynb');
@@ -286,18 +306,28 @@ describe('NebulaClient', () => {
 
   describe('listFiles', () => {
     it('should list files in directory', async () => {
+      // API returns { path, parent, mtime, items: Array<{name, path, isDirectory, ...}> }
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => [
-          { name: 'file1.ipynb', type: 'file' },
-          { name: 'folder', type: 'directory' },
-        ],
+        json: async () => ({
+          path: '/path',
+          parent: '/',
+          mtime: Date.now(),
+          items: [
+            { name: 'file1.ipynb', path: '/path/file1.ipynb', isDirectory: false, size: '1KB', modified: Date.now(), extension: '.ipynb', fileType: 'notebook' },
+            { name: 'folder', path: '/path/folder', isDirectory: true, size: '', modified: Date.now(), extension: '', fileType: '' },
+          ],
+        }),
       });
 
       const result = await client.listFiles('/path');
 
       expect(result.success).toBe(true);
       expect(result.data).toHaveLength(2);
+      expect(result.data![0].name).toBe('file1.ipynb');
+      expect(result.data![0].type).toBe('notebook');
+      expect(result.data![1].name).toBe('folder');
+      expect(result.data![1].type).toBe('directory');
     });
   });
 
@@ -350,11 +380,14 @@ describe('NebulaClient', () => {
 
   describe('network errors', () => {
     it('should handle network failures', async () => {
+      // Create a client with no retries for error testing
+      const errorClient = createNebulaClient({ baseUrl: 'http://localhost:8000', retries: 1 });
       mockFetch.mockRejectedValueOnce(new Error('Network error'));
 
-      const result = await client.listKernels();
+      const result = await errorClient.listKernels();
 
       expect(result.success).toBe(false);
+      // Error is wrapped as "Request failed: <original message>"
       expect(result.error).toContain('Network error');
     });
   });
