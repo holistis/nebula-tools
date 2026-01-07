@@ -284,6 +284,66 @@ export declare class NebulaClient {
     }[], provider?: string, model?: string): Promise<ToolResult<string>>;
     private parseJupyterOutput;
     private toJupyterOutput;
+    /**
+     * Apply a notebook operation through the operation router.
+     *
+     * Operations are routed to:
+     * - Connected UI via WebSocket (if available) - UI applies and saves
+     * - Headless manager (file-based) otherwise
+     *
+     * From the agent's perspective, both modes behave identically.
+     */
+    applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>>;
+    /**
+     * Read notebook through the operation router.
+     *
+     * If UI is connected, requests current state from UI.
+     * Otherwise reads from file.
+     */
+    readNotebookViaRouter(path: string): Promise<ToolResult<Notebook>>;
+    /**
+     * Check if a UI is connected for a notebook path
+     */
+    hasUI(path: string): Promise<boolean>;
+    /**
+     * Insert a cell using the operation router
+     */
+    insertCellOp(path: string, index: number, cell: {
+        id: string;
+        type: 'code' | 'markdown';
+        content: string;
+        metadata?: CellMetadata;
+    }): Promise<ToolResult<WriteCellResult>>;
+    /**
+     * Delete a cell using the operation router
+     */
+    deleteCellOp(path: string, options: {
+        cellId?: string;
+        cellIndex?: number;
+    }): Promise<ToolResult<void>>;
+    /**
+     * Update cell content using the operation router
+     */
+    updateContentOp(path: string, cellId: string, content: string): Promise<ToolResult<void>>;
+    /**
+     * Update cell metadata using the operation router
+     */
+    updateMetadataOp(path: string, cellId: string, changes: Record<string, unknown>): Promise<ToolResult<void>>;
+    /**
+     * Move a cell using the operation router
+     */
+    moveCellOp(path: string, fromIndex: number, toIndex: number): Promise<ToolResult<void>>;
+    /**
+     * Duplicate a cell using the operation router
+     */
+    duplicateCellOp(path: string, cellIndex: number, newCellId: string): Promise<ToolResult<{
+        cellIndex: number;
+        cellId: string;
+    }>>;
+    /**
+     * Update cell outputs using the operation router
+     */
+    updateOutputsOp(path: string, cellId: string, outputs: CellOutput[], executionCount?: number): Promise<ToolResult<void>>;
 }
 /**
  * Create a new Nebula client

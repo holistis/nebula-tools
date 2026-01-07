@@ -1367,6 +1367,265 @@ export class NebulaClient {
         return { output_type: 'stream', name: 'stdout', text: output.content };
     }
   }
+
+  // ===========================================================================
+  // Operation-Based API (routes through backend to UI or headless)
+  // ===========================================================================
+
+  /**
+   * Apply a notebook operation through the operation router.
+   *
+   * Operations are routed to:
+   * - Connected UI via WebSocket (if available) - UI applies and saves
+   * - Headless manager (file-based) otherwise
+   *
+   * From the agent's perspective, both modes behave identically.
+   */
+  async applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>> {
+    return this.fetch<import('../types.js').OperationResult>('/api/notebook/operation', {
+      method: 'POST',
+      body: JSON.stringify({ operation }),
+    });
+  }
+
+  /**
+   * Read notebook through the operation router.
+   *
+   * If UI is connected, requests current state from UI.
+   * Otherwise reads from file.
+   */
+  async readNotebookViaRouter(path: string): Promise<ToolResult<Notebook>> {
+    interface RouterReadResult {
+      success: boolean;
+      data?: {
+        path: string;
+        cells: NotebookCell[];
+        metadata?: Record<string, unknown>;
+      };
+      error?: string;
+    }
+
+    const result = await this.fetch<RouterReadResult>(`/api/notebook/read?path=${encodeURIComponent(path)}`);
+
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    // Router returns response with success/data/error structure
+    const routerResult = result.data!;
+    if (!routerResult.success) {
+      return { success: false, error: routerResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        path: routerResult.data!.path,
+        cells: routerResult.data!.cells,
+        metadata: routerResult.data!.metadata,
+      },
+    };
+  }
+
+  /**
+   * Check if a UI is connected for a notebook path
+   */
+  async hasUI(path: string): Promise<boolean> {
+    const result = await this.fetch<{ hasUI: boolean }>(`/api/notebook/has-ui?path=${encodeURIComponent(path)}`);
+    return result.success && result.data?.hasUI === true;
+  }
+
+  // ===========================================================================
+  // Operation-Based Cell Methods
+  // ===========================================================================
+
+  /**
+   * Insert a cell using the operation router
+   */
+  async insertCellOp(
+    path: string,
+    index: number,
+    cell: { id: string; type: 'code' | 'markdown'; content: string; metadata?: CellMetadata }
+  ): Promise<ToolResult<WriteCellResult>> {
+    const operation: import('../types.js').InsertCellOp = {
+      type: 'insertCell',
+      notebookPath: path,
+      index,
+      cell,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        cellIndex: opResult.cellIndex!,
+        cellId: opResult.cellId!,
+        totalCells: -1, // Not available from operation result
+        idModified: opResult.idModified,
+        requestedId: opResult.requestedId,
+      },
+    };
+  }
+
+  /**
+   * Delete a cell using the operation router
+   */
+  async deleteCellOp(path: string, options: { cellId?: string; cellIndex?: number }): Promise<ToolResult<void>> {
+    const operation: import('../types.js').DeleteCellOp = {
+      type: 'deleteCell',
+      notebookPath: path,
+      cellId: options.cellId,
+      cellIndex: options.cellIndex,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Update cell content using the operation router
+   */
+  async updateContentOp(path: string, cellId: string, content: string): Promise<ToolResult<void>> {
+    const operation: import('../types.js').UpdateContentOp = {
+      type: 'updateContent',
+      notebookPath: path,
+      cellId,
+      content,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Update cell metadata using the operation router
+   */
+  async updateMetadataOp(path: string, cellId: string, changes: Record<string, unknown>): Promise<ToolResult<void>> {
+    const operation: import('../types.js').UpdateMetadataOp = {
+      type: 'updateMetadata',
+      notebookPath: path,
+      cellId,
+      changes,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Move a cell using the operation router
+   */
+  async moveCellOp(path: string, fromIndex: number, toIndex: number): Promise<ToolResult<void>> {
+    const operation: import('../types.js').MoveCellOp = {
+      type: 'moveCell',
+      notebookPath: path,
+      fromIndex,
+      toIndex,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Duplicate a cell using the operation router
+   */
+  async duplicateCellOp(path: string, cellIndex: number, newCellId: string): Promise<ToolResult<{ cellIndex: number; cellId: string }>> {
+    const operation: import('../types.js').DuplicateCellOp = {
+      type: 'duplicateCell',
+      notebookPath: path,
+      cellIndex,
+      newCellId,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        cellIndex: opResult.cellIndex!,
+        cellId: opResult.cellId!,
+      },
+    };
+  }
+
+  /**
+   * Update cell outputs using the operation router
+   */
+  async updateOutputsOp(path: string, cellId: string, outputs: CellOutput[], executionCount?: number): Promise<ToolResult<void>> {
+    const operation: import('../types.js').UpdateOutputsOp = {
+      type: 'updateOutputs',
+      notebookPath: path,
+      cellId,
+      outputs,
+      executionCount,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return { success: true };
+  }
 }
 
 /**

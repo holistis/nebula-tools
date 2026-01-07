@@ -106,3 +106,131 @@ export interface Notebook {
   cells: NotebookCell[];
   metadata?: Record<string, unknown>;
 }
+
+// ============================================================================
+// Notebook Operations - Unified format for UI and headless mode
+// ============================================================================
+
+/**
+ * Insert a new cell at a specific position
+ */
+export interface InsertCellOp {
+  type: 'insertCell';
+  notebookPath: string;
+  index: number; // -1 = append
+  cell: {
+    id: string;
+    type: 'code' | 'markdown';
+    content: string;
+    metadata?: CellMetadata;
+  };
+}
+
+/**
+ * Delete a cell by ID or index
+ */
+export interface DeleteCellOp {
+  type: 'deleteCell';
+  notebookPath: string;
+  cellId?: string;
+  cellIndex?: number;
+}
+
+/**
+ * Update cell content
+ */
+export interface UpdateContentOp {
+  type: 'updateContent';
+  notebookPath: string;
+  cellId: string;
+  content: string;
+}
+
+/**
+ * Update cell metadata (type, scrolled, etc.)
+ */
+export interface UpdateMetadataOp {
+  type: 'updateMetadata';
+  notebookPath: string;
+  cellId: string;
+  changes: Record<string, unknown>;
+}
+
+/**
+ * Move a cell from one position to another
+ */
+export interface MoveCellOp {
+  type: 'moveCell';
+  notebookPath: string;
+  fromIndex: number;
+  toIndex: number;
+}
+
+/**
+ * Duplicate a cell
+ */
+export interface DuplicateCellOp {
+  type: 'duplicateCell';
+  notebookPath: string;
+  cellIndex: number;
+  newCellId: string;
+}
+
+/**
+ * Update cell outputs (typically after execution)
+ */
+export interface UpdateOutputsOp {
+  type: 'updateOutputs';
+  notebookPath: string;
+  cellId: string;
+  outputs: CellOutput[];
+  executionCount?: number;
+}
+
+/**
+ * Union of all notebook operations
+ */
+export type NotebookOperation =
+  | InsertCellOp
+  | DeleteCellOp
+  | UpdateContentOp
+  | UpdateMetadataOp
+  | MoveCellOp
+  | DuplicateCellOp
+  | UpdateOutputsOp;
+
+/**
+ * Result of applying an operation
+ */
+export interface OperationResult {
+  success: boolean;
+  /** Actual cell ID (may differ from requested if auto-fixed) */
+  cellId?: string;
+  /** Cell index after operation */
+  cellIndex?: number;
+  /** Whether ID was modified due to conflict */
+  idModified?: boolean;
+  /** Original requested ID if modified */
+  requestedId?: string;
+  /** Error message if failed */
+  error?: string;
+}
+
+/**
+ * Message sent to UI to apply an operation
+ */
+export interface OperationMessage {
+  type: 'operation';
+  operation: NotebookOperation;
+  /** Unique ID for tracking response */
+  requestId: string;
+}
+
+/**
+ * Response from UI after applying operation
+ */
+export interface OperationResponse {
+  type: 'operationResult';
+  requestId: string;
+  result: OperationResult;
+}
