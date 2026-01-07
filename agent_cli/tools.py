@@ -440,6 +440,8 @@ def _subagent_model(model: Optional[str]) -> str:
         cleaned = model.strip()
         if cleaned:
             lowered = cleaned.lower()
+            if lowered.startswith("litellm/"):
+                return cleaned
             if "claude" in lowered:
                 return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
             if lowered == "gpt-4-mini":
