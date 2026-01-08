@@ -167,9 +167,19 @@ export interface UpdateOutputsOp {
     executionCount?: number;
 }
 /**
+ * Create a new notebook
+ */
+export interface CreateNotebookOp {
+    type: 'createNotebook';
+    notebookPath: string;
+    overwrite?: boolean;
+    kernelName?: string;
+    kernelDisplayName?: string;
+}
+/**
  * Union of all notebook operations
  */
-export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp;
+export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp;
 /**
  * Result of applying an operation
  */
@@ -185,6 +195,10 @@ export interface OperationResult {
     requestedId?: string;
     /** Error message if failed */
     error?: string;
+    /** Path of created/modified notebook (for createNotebook) */
+    path?: string;
+    /** File modification time (for createNotebook) */
+    mtime?: number;
 }
 /**
  * Message sent to UI to apply an operation

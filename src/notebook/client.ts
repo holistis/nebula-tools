@@ -1436,6 +1436,42 @@ export class NebulaClient {
   }
 
   // ===========================================================================
+  // Operation-Based Notebook Methods
+  // ===========================================================================
+
+  /**
+   * Create a new notebook using the operation router.
+   *
+   * Routes to UI if connected (UI creates file and tracks mtime),
+   * otherwise creates via headless manager.
+   *
+   * @param path - Path to create the notebook
+   * @param options - Optional settings
+   * @param options.overwrite - Allow overwriting existing file (default: false)
+   * @param options.kernelName - Kernel name (default: 'python3')
+   * @param options.kernelDisplayName - Display name for kernel
+   * @returns Result with path and mtime on success
+   */
+  async createNotebookOp(
+    path: string,
+    options: {
+      overwrite?: boolean;
+      kernelName?: string;
+      kernelDisplayName?: string;
+    } = {}
+  ): Promise<ToolResult<{ path?: string; mtime?: number }>> {
+    const { overwrite = false, kernelName = 'python3', kernelDisplayName = 'Python 3' } = options;
+
+    return this.applyOperation({
+      type: 'createNotebook',
+      notebookPath: path,
+      overwrite,
+      kernelName,
+      kernelDisplayName,
+    });
+  }
+
+  // ===========================================================================
   // Operation-Based Cell Methods
   // ===========================================================================
 
