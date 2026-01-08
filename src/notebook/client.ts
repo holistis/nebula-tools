@@ -1226,6 +1226,74 @@ export class NebulaClient {
   }
 
   // ===========================================================================
+  // Agent Session Management
+  // ===========================================================================
+
+  /**
+   * Start an agent session (locks notebook for agent use).
+   * If a session is already active, returns a warning but still starts a new session.
+   */
+  async startAgentSession(path: string, agentId?: string): Promise<ToolResult<{
+    warning?: string;
+    previousSessionDuration?: number;
+  }>> {
+    const operation: import('../types.js').StartAgentSessionOp = {
+      type: 'startAgentSession',
+      notebookPath: path,
+      agentId,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        warning: opResult.warning,
+      },
+    };
+  }
+
+  /**
+   * End an agent session (unlocks notebook).
+   * Should be called when agent work is complete.
+   */
+  async endAgentSession(path: string): Promise<ToolResult<{
+    sessionDuration?: number;
+    warning?: string;
+  }>> {
+    const operation: import('../types.js').EndAgentSessionOp = {
+      type: 'endAgentSession',
+      notebookPath: path,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        sessionDuration: opResult.sessionDuration,
+        warning: opResult.warning,
+      },
+    };
+  }
+
+  // ===========================================================================
   // Python Environment Discovery
   // ===========================================================================
 

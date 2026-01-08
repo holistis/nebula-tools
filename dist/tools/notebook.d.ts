@@ -124,5 +124,21 @@ export interface UpdateMetadataResult {
     oldCellId?: string;
 }
 export declare const updateMetadataTool: Tool<UpdateMetadataParams, UpdateMetadataResult>;
-export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<ClearNotebookParams, ClearNotebookResult> | Tool<MoveCellParams, void> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult>)[];
+export interface StartAgentSessionParams {
+    path: string;
+    agent_id?: string;
+}
+export interface StartAgentSessionResult {
+    warning?: string;
+}
+export declare const startAgentSessionTool: Tool<StartAgentSessionParams, StartAgentSessionResult>;
+export interface EndAgentSessionParams {
+    path: string;
+}
+export interface EndAgentSessionResult {
+    sessionDuration?: number;
+    warning?: string;
+}
+export declare const endAgentSessionTool: Tool<EndAgentSessionParams, EndAgentSessionResult>;
+export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<ClearNotebookParams, ClearNotebookResult> | Tool<MoveCellParams, void> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult> | Tool<StartAgentSessionParams, StartAgentSessionResult> | Tool<EndAgentSessionParams, EndAgentSessionResult>)[];
 //# sourceMappingURL=notebook.d.ts.map

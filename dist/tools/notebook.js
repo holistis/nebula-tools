@@ -547,6 +547,82 @@ export const updateMetadataTool = {
         return [{ type: 'text', text: msg }];
     },
 };
+export const startAgentSessionTool = {
+    definition: {
+        name: 'start_agent_session',
+        description: 'Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+                agent_id: { type: 'string', description: 'Optional identifier for this agent session' },
+            },
+            required: ['path'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        const result = await client.startAgentSession(params.path, params.agent_id);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        // Print warning if previous session wasn't ended
+        if (result.data?.warning) {
+            console.warn(`[start_agent_session] ${result.data.warning}`);
+        }
+        return { success: true, data: { warning: result.data?.warning } };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        let msg = 'Agent session started - notebook locked';
+        if (result.data?.warning) {
+            msg += `\n⚠️ Warning: ${result.data.warning}`;
+        }
+        return [{ type: 'text', text: msg }];
+    },
+};
+export const endAgentSessionTool = {
+    definition: {
+        name: 'end_agent_session',
+        description: 'End an agent session, unlocking the notebook for user edits. Always call this when agent work is complete.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+            },
+            required: ['path'],
+        },
+        annotations: { destructiveHint: false },
+    },
+    async execute(params, client) {
+        const result = await client.endAgentSession(params.path);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return {
+            success: true,
+            data: {
+                sessionDuration: result.data?.sessionDuration,
+                warning: result.data?.warning,
+            },
+        };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const duration = result.data?.sessionDuration
+            ? ` (duration: ${Math.round(result.data.sessionDuration / 1000)}s)`
+            : '';
+        let msg = `Agent session ended${duration} - notebook unlocked`;
+        if (result.data?.warning) {
+            msg += `\n⚠️ ${result.data.warning}`;
+        }
+        return [{ type: 'text', text: msg }];
+    },
+};
 // =============================================================================
 // Export all notebook tools
 // =============================================================================
@@ -562,5 +638,7 @@ export const notebookTools = [
     duplicateCellTool,
     searchCellsTool,
     updateMetadataTool,
+    startAgentSessionTool,
+    endAgentSessionTool,
 ];
 //# sourceMappingURL=notebook.js.map

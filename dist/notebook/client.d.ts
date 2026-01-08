@@ -307,6 +307,22 @@ export declare class NebulaClient {
         deletedCount: number;
     }>>;
     /**
+     * Start an agent session (locks notebook for agent use).
+     * If a session is already active, returns a warning but still starts a new session.
+     */
+    startAgentSession(path: string, agentId?: string): Promise<ToolResult<{
+        warning?: string;
+        previousSessionDuration?: number;
+    }>>;
+    /**
+     * End an agent session (unlocks notebook).
+     * Should be called when agent work is complete.
+     */
+    endAgentSession(path: string): Promise<ToolResult<{
+        sessionDuration?: number;
+        warning?: string;
+    }>>;
+    /**
      * List available Python environments on the system.
      *
      * Discovers Python installations from:

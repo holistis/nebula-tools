@@ -162,6 +162,20 @@ async function main() {
     return result.data;
   };
 
+  // Start agent session (locks notebook for agent use)
+  console.log('\n🔒 Starting agent session...');
+  try {
+    const sessionResult = await tool('start_agent_session', { path: NOTEBOOK_PATH, agent_id: 'physics-demo' });
+    if (sessionResult.warning) {
+      console.log(`  ⚠️  ${sessionResult.warning}`);
+    } else {
+      console.log('  ✓ Notebook locked for agent use');
+    }
+  } catch (e) {
+    // Notebook might not exist yet, that's ok
+    console.log('  ℹ️  Notebook not yet created, will start session after creation');
+  }
+
   // Step 1: Check if notebook exists and clean up if needed
   console.log('\n📓 Checking notebook state...');
   let notebookExists = false;
@@ -253,13 +267,24 @@ async function main() {
     }
   }
 
+  // End agent session (unlocks notebook)
+  console.log('\n🔓 Ending agent session...');
+  try {
+    const endResult = await tool('end_agent_session', { path: NOTEBOOK_PATH });
+    const duration = endResult.sessionDuration ? ` (${Math.round(endResult.sessionDuration / 1000)}s)` : '';
+    console.log(`  ✓ Notebook unlocked${duration}`);
+  } catch (e) {
+    console.log('  ⚠️  Could not end session:', e.message);
+  }
+
   // Done
-  console.log('='.repeat(60));
+  console.log('\n' + '='.repeat(60));
   console.log('✅ Demo complete!');
   console.log('   Notebook: ' + NOTEBOOK_PATH);
   console.log('   Plot: /tmp/double_pendulum_chaos.png');
   console.log('   Kernel: ' + sessionId + ' (still running)');
-  console.log('\n📜 Used tools: read_notebook, clear_notebook, insert_cell, kernel_start, execute_cell');
+  console.log('\n📜 Used tools: start_agent_session, read_notebook, clear_notebook, insert_cell,');
+  console.log('              kernel_start, execute_cell, end_agent_session');
   console.log('   These are the same tools exposed via MCP server.');
 }
 

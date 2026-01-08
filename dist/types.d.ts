@@ -202,9 +202,24 @@ export interface ClearNotebookOp {
     notebookPath: string;
 }
 /**
+ * Start an agent session (locks notebook for agent use)
+ */
+export interface StartAgentSessionOp {
+    type: 'startAgentSession';
+    notebookPath: string;
+    agentId?: string;
+}
+/**
+ * End an agent session (unlocks notebook)
+ */
+export interface EndAgentSessionOp {
+    type: 'endAgentSession';
+    notebookPath: string;
+}
+/**
  * Union of all notebook operations
  */
-export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp;
+export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp | StartAgentSessionOp | EndAgentSessionOp;
 /**
  * Result of applying an operation
  */
@@ -232,6 +247,10 @@ export interface OperationResult {
     executionCount?: number;
     /** Number of cells deleted (for clearNotebook operation) */
     deletedCount?: number;
+    /** Warning message (for session operations) */
+    warning?: string;
+    /** Session duration in ms (for endAgentSession operation) */
+    sessionDuration?: number;
 }
 /**
  * Message sent to UI to apply an operation
