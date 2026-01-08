@@ -174,13 +174,13 @@ describe('MCP Tool Execution Integration', () => {
       expect((result.content[0] as { type: 'text'; text: string }).text).toContain('Cell 1');
     });
 
-    it('should execute write_cell (append)', async () => {
-      const result = await executeToolForMCP('write_cell', {
+    it('should execute insert_cell (append)', async () => {
+      const result = await executeToolForMCP('insert_cell', {
         path: TEST_NOTEBOOK_PATH,
-        cell_index: -1,
         cell_id: 'test-appended-cell',
         content: 'print("Appended cell")',
         cell_type: 'code',
+        // position omitted = append
       }, client);
 
       expect(result.isError).toBeFalsy();
@@ -360,6 +360,10 @@ describe('MCP Tool Execution Integration', () => {
     it('should not have python tools', () => {
       expect(hasTool('list_python_environments')).toBe(false);
       expect(hasTool('get_python_info')).toBe(false);
+    });
+
+    it('should not have write_cell tool (replaced by insert_cell/update_cell)', () => {
+      expect(hasTool('write_cell')).toBe(false);
     });
   });
 });

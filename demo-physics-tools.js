@@ -3,12 +3,12 @@
  * Demo: Create and execute a physics notebook using the Tools API
  *
  * This version uses the consolidated tools (same as MCP server exposes):
- * - read_notebook, write_cell, delete_cell
+ * - read_notebook, insert_cell, clear_notebook
  * - kernel_start, execute_cell
  *
  * Key difference from demo-physics.js:
  * - Uses executeToolByName() instead of client methods directly
- * - Cleans up existing cells if notebook is not empty
+ * - Uses clear_notebook to clean existing cells (no looping needed)
  * - Shows how an agent would interact via tools
  */
 
@@ -176,15 +176,11 @@ async function main() {
     console.log('  Notebook does not exist yet');
   }
 
-  // Clean up existing cells if notebook has content
+  // Clean up existing cells if notebook has content (using clear_notebook - no looping needed!)
   if (notebookExists && existingCellCount > 0) {
-    console.log('\n🧹 Cleaning up existing cells...');
-    // Delete from end to start to avoid index shifting
-    for (let i = existingCellCount - 1; i >= 0; i--) {
-      await tool('delete_cell', { path: NOTEBOOK_PATH, cell_index: i });
-      process.stdout.write(`  Deleted cell ${i}\r`);
-    }
-    console.log(`  ✓ Deleted ${existingCellCount} cells`);
+    console.log('\n🧹 Clearing notebook...');
+    const clearResult = await tool('clear_notebook', { path: NOTEBOOK_PATH });
+    console.log(`  ✓ Cleared ${clearResult.deletedCount} cells`);
   }
 
   // Create notebook if it doesn't exist (using client directly for this bootstrap operation)
@@ -207,16 +203,16 @@ async function main() {
   const sessionId = kernelResult.sessionId;
   console.log('  ✓ Kernel started:', sessionId);
 
-  // Step 3: Insert cells using write_cell tool (cell_index=-1 to append)
-  console.log('\n📝 Inserting cells using write_cell tool...');
+  // Step 3: Insert cells using insert_cell tool (position omitted = append)
+  console.log('\n📝 Inserting cells using insert_cell tool...');
   for (let i = 0; i < CELLS.length; i++) {
     const cell = CELLS[i];
-    await tool('write_cell', {
+    await tool('insert_cell', {
       path: NOTEBOOK_PATH,
-      cell_index: -1,  // -1 = append
       cell_id: cell.id,
       content: cell.content,
       cell_type: cell.type
+      // position omitted = append (clearer than -1!)
     });
     console.log(`  ✓ Cell ${i}: ${cell.id} (${cell.type})`);
   }
@@ -260,7 +256,7 @@ async function main() {
   console.log('   Notebook: ' + NOTEBOOK_PATH);
   console.log('   Plot: /tmp/double_pendulum_chaos.png');
   console.log('   Kernel: ' + sessionId + ' (still running)');
-  console.log('\n📜 Used tools: read_notebook, delete_cell, write_cell, kernel_start, execute_cell');
+  console.log('\n📜 Used tools: read_notebook, clear_notebook, insert_cell, kernel_start, execute_cell');
   console.log('   These are the same tools exposed via MCP server.');
 }
 

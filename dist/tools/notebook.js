@@ -168,62 +168,98 @@ export const readOutputTool = {
         ];
     },
 };
-export const writeCellTool = {
+export const insertCellTool = {
     definition: {
-        name: 'write_cell',
-        description: 'Insert or update a cell. Use cell_index=-1 to append. Provide cell_id for new cells (will be auto-fixed if duplicate).',
+        name: 'insert_cell',
+        description: 'Insert a new cell into the notebook. Use position=-1 or omit to append at end.',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'Path to the notebook file' },
-                cell_index: { type: 'number', description: 'Cell index to update, or -1 to append' },
+                cell_id: { type: 'string', description: 'Unique ID for the new cell' },
                 content: { type: 'string', description: 'Cell content' },
                 cell_type: { type: 'string', enum: ['code', 'markdown'], description: 'Cell type (default: code)' },
-                cell_id: { type: 'string', description: 'Cell ID for new cells (required when cell_index=-1)' },
+                position: { type: 'number', description: 'Position to insert at (0-based). Use -1 or omit to append.' },
             },
-            required: ['path', 'cell_index', 'content'],
+            required: ['path', 'cell_id', 'content'],
         },
         annotations: { destructiveHint: true },
     },
     async execute(params, client) {
-        const { path, cell_index, content, cell_type = 'code', cell_id } = params;
-        if (cell_index === -1 && !cell_id) {
-            return { success: false, error: 'cell_id is required when creating new cells (cell_index=-1)' };
+        const { path, cell_id, content, cell_type = 'code', position = -1 } = params;
+        const result = await client.insertCellOp(path, position, {
+            id: cell_id,
+            type: cell_type,
+            content,
+        });
+        if (!result.success) {
+            return { success: false, error: result.error };
         }
-        if (cell_index === -1) {
-            // Insert new cell
-            const result = await client.insertCellOp(path, -1, {
-                id: cell_id,
-                type: cell_type,
-                content,
-            });
-            if (!result.success) {
-                return { success: false, error: result.error };
-            }
-            return { success: true, data: result.data };
-        }
-        else {
-            // Update existing cell
-            const result = await client.updateContentOp(path, cell_id || `index-${cell_index}`, content);
-            if (!result.success) {
-                return { success: false, error: result.error };
-            }
-            return {
-                success: true,
-                data: { cellIndex: cell_index, cellId: cell_id || `index-${cell_index}` },
-            };
-        }
+        return { success: true, data: result.data };
     },
     formatForMCP(result) {
         if (!result.success) {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
         const { cellIndex, cellId, idModified, requestedId } = result.data;
-        let msg = `Cell at index ${cellIndex}, id="${cellId}"`;
+        let msg = `Inserted cell at index ${cellIndex}, id="${cellId}"`;
         if (idModified) {
             msg += ` (requested "${requestedId}" was auto-fixed)`;
         }
         return [{ type: 'text', text: msg }];
+    },
+};
+export const updateCellTool = {
+    definition: {
+        name: 'update_cell',
+        description: 'Update an existing cell by its stable ID. Can update content and/or type.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+                cell_id: { type: 'string', description: 'Cell ID to update' },
+                content: { type: 'string', description: 'New cell content (optional)' },
+                cell_type: { type: 'string', enum: ['code', 'markdown'], description: 'New cell type (optional)' },
+            },
+            required: ['path', 'cell_id'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        const { path, cell_id, content, cell_type } = params;
+        if (content === undefined && cell_type === undefined) {
+            return { success: false, error: 'Must provide content or cell_type to update' };
+        }
+        // If content is provided, update it
+        if (content !== undefined) {
+            const result = await client.updateContentOp(path, cell_id, content);
+            if (!result.success) {
+                return { success: false, error: result.error };
+            }
+        }
+        // If cell_type is provided, update metadata
+        if (cell_type !== undefined) {
+            const result = await client.updateMetadataOp(path, cell_id, { type: cell_type });
+            if (!result.success) {
+                return { success: false, error: result.error };
+            }
+        }
+        // Read back to get cell index
+        const readResult = await client.readCellOp(path, { cellId: cell_id });
+        if (!readResult.success) {
+            return { success: false, error: readResult.error };
+        }
+        return {
+            success: true,
+            data: { cellIndex: readResult.data.cellIndex, cellId: cell_id },
+        };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { cellIndex, cellId } = result.data;
+        return [{ type: 'text', text: `Updated cell at index ${cellIndex}, id="${cellId}"` }];
     },
 };
 export const deleteCellTool = {
@@ -256,6 +292,49 @@ export const deleteCellTool = {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
         return [{ type: 'text', text: 'Cell deleted' }];
+    },
+};
+export const clearNotebookTool = {
+    definition: {
+        name: 'clear_notebook',
+        description: 'Delete all cells from a notebook. Useful for starting fresh without creating a new file.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+            },
+            required: ['path'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        // Read notebook to get cell count
+        const notebookResult = await client.readNotebookViaRouter(params.path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const cellCount = notebookResult.data.cells.length;
+        if (cellCount === 0) {
+            return { success: true, data: { deletedCount: 0 } };
+        }
+        // Delete cells from end to start to avoid index shifting
+        for (let i = cellCount - 1; i >= 0; i--) {
+            const result = await client.deleteCellOp(params.path, { cellIndex: i });
+            if (!result.success) {
+                return { success: false, error: `Failed to delete cell ${i}: ${result.error}` };
+            }
+        }
+        return { success: true, data: { deletedCount: cellCount } };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { deletedCount } = result.data;
+        if (deletedCount === 0) {
+            return [{ type: 'text', text: 'Notebook was already empty' }];
+        }
+        return [{ type: 'text', text: `Cleared notebook: deleted ${deletedCount} cells` }];
     },
 };
 export const moveCellTool = {
@@ -399,8 +478,10 @@ export const notebookTools = [
     readNotebookTool,
     readCellTool,
     readOutputTool,
-    writeCellTool,
+    insertCellTool,
+    updateCellTool,
     deleteCellTool,
+    clearNotebookTool,
     moveCellTool,
     duplicateCellTool,
     searchCellsTool,

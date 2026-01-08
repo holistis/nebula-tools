@@ -40,26 +40,44 @@ export interface ReadOutputResult {
     totalOutputs: number;
 }
 export declare const readOutputTool: Tool<ReadOutputParams, ReadOutputResult>;
-export interface WriteCellParams {
+export interface InsertCellParams {
     path: string;
-    cell_index: number;
+    cell_id: string;
     content: string;
     cell_type?: 'code' | 'markdown';
-    cell_id?: string;
+    position?: number;
 }
-export interface WriteCellResult {
+export interface InsertCellResult {
     cellIndex: number;
     cellId: string;
     idModified?: boolean;
     requestedId?: string;
 }
-export declare const writeCellTool: Tool<WriteCellParams, WriteCellResult>;
+export declare const insertCellTool: Tool<InsertCellParams, InsertCellResult>;
+export interface UpdateCellParams {
+    path: string;
+    cell_id: string;
+    content?: string;
+    cell_type?: 'code' | 'markdown';
+}
+export interface UpdateCellResult {
+    cellIndex: number;
+    cellId: string;
+}
+export declare const updateCellTool: Tool<UpdateCellParams, UpdateCellResult>;
 export interface DeleteCellParams {
     path: string;
     cell_index?: number;
     cell_id?: string;
 }
 export declare const deleteCellTool: Tool<DeleteCellParams, void>;
+export interface ClearNotebookParams {
+    path: string;
+}
+export interface ClearNotebookResult {
+    deletedCount: number;
+}
+export declare const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult>;
 export interface MoveCellParams {
     path: string;
     from_index: number;
@@ -106,5 +124,5 @@ export interface UpdateMetadataResult {
     oldCellId?: string;
 }
 export declare const updateMetadataTool: Tool<UpdateMetadataParams, UpdateMetadataResult>;
-export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<WriteCellParams, WriteCellResult> | Tool<DeleteCellParams, void> | Tool<MoveCellParams, void> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult>)[];
+export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<ClearNotebookParams, ClearNotebookResult> | Tool<MoveCellParams, void> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult>)[];
 //# sourceMappingURL=notebook.d.ts.map

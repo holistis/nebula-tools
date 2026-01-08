@@ -25,8 +25,10 @@ import {
   readNotebookTool,
   readCellTool,
   readOutputTool,
-  writeCellTool,
+  insertCellTool,
+  updateCellTool,
   deleteCellTool,
+  clearNotebookTool,
   moveCellTool,
   duplicateCellTool,
   searchCellsTool,
@@ -53,9 +55,9 @@ describe('Tool Collections', () => {
       expect(allTools.length).toBe(expectedCount);
     });
 
-    it('should contain 15 total tools', () => {
-      // 9 notebook + 5 kernel + 1 execution = 15
-      expect(allTools.length).toBe(15);
+    it('should contain 17 total tools', () => {
+      // 11 notebook + 5 kernel + 1 execution = 17
+      expect(allTools.length).toBe(17);
     });
 
     it('should have unique tool names', () => {
@@ -99,8 +101,8 @@ describe('Tool Collections', () => {
   });
 
   describe('Individual Tool Arrays', () => {
-    it('notebookTools should have 9 tools', () => {
-      expect(notebookTools.length).toBe(9);
+    it('notebookTools should have 11 tools', () => {
+      expect(notebookTools.length).toBe(11);
     });
 
     it('kernelTools should have 5 tools', () => {
@@ -156,8 +158,10 @@ describe('Tool Definitions', () => {
     ];
 
     const destructiveTools = [
-      'write_cell',
+      'insert_cell',
+      'update_cell',
       'delete_cell',
+      'clear_notebook',
       'move_cell',
       'duplicate_cell',
       'update_metadata',
@@ -208,12 +212,34 @@ describe('Tool Definitions', () => {
       expect(def.inputSchema.required).toContain('path');
     });
 
-    it('write_cell should have correct schema', () => {
-      const def = writeCellTool.definition;
-      expect(def.name).toBe('write_cell');
+    it('insert_cell should have correct schema', () => {
+      const def = insertCellTool.definition;
+      expect(def.name).toBe('insert_cell');
+      expect(def.inputSchema.properties.path).toBeDefined();
+      expect(def.inputSchema.properties.cell_id).toBeDefined();
+      expect(def.inputSchema.properties.content).toBeDefined();
+      expect(def.inputSchema.properties.position).toBeDefined();
       expect(def.inputSchema.required).toContain('path');
-      expect(def.inputSchema.required).toContain('cell_index');
+      expect(def.inputSchema.required).toContain('cell_id');
       expect(def.inputSchema.required).toContain('content');
+    });
+
+    it('update_cell should have correct schema', () => {
+      const def = updateCellTool.definition;
+      expect(def.name).toBe('update_cell');
+      expect(def.inputSchema.properties.path).toBeDefined();
+      expect(def.inputSchema.properties.cell_id).toBeDefined();
+      expect(def.inputSchema.properties.content).toBeDefined();
+      expect(def.inputSchema.properties.cell_type).toBeDefined();
+      expect(def.inputSchema.required).toContain('path');
+      expect(def.inputSchema.required).toContain('cell_id');
+    });
+
+    it('clear_notebook should have correct schema', () => {
+      const def = clearNotebookTool.definition;
+      expect(def.name).toBe('clear_notebook');
+      expect(def.inputSchema.properties.path).toBeDefined();
+      expect(def.inputSchema.required).toContain('path');
     });
 
     it('search_cells should have correct schema', () => {
@@ -297,6 +323,9 @@ describe('Tool Utility Functions', () => {
   describe('hasTool', () => {
     it('should return true for existing tools', () => {
       expect(hasTool('read_notebook')).toBe(true);
+      expect(hasTool('insert_cell')).toBe(true);
+      expect(hasTool('update_cell')).toBe(true);
+      expect(hasTool('clear_notebook')).toBe(true);
       expect(hasTool('kernel_start')).toBe(true);
       expect(hasTool('execute_cell')).toBe(true);
       expect(hasTool('list_kernels')).toBe(true);
@@ -313,6 +342,7 @@ describe('Tool Utility Functions', () => {
       expect(hasTool('list_files')).toBe(false);
       expect(hasTool('list_sessions')).toBe(false);
       expect(hasTool('list_python_environments')).toBe(false);
+      expect(hasTool('write_cell')).toBe(false); // Replaced by insert_cell and update_cell
     });
   });
 
@@ -322,7 +352,9 @@ describe('Tool Utility Functions', () => {
 
       expect(byCategory.notebook).toContain('read_notebook');
       expect(byCategory.notebook).toContain('read_cell');
-      expect(byCategory.notebook).toContain('write_cell');
+      expect(byCategory.notebook).toContain('insert_cell');
+      expect(byCategory.notebook).toContain('update_cell');
+      expect(byCategory.notebook).toContain('clear_notebook');
 
       expect(byCategory.kernel).toContain('list_kernels');
       expect(byCategory.kernel).toContain('kernel_start');
@@ -333,7 +365,7 @@ describe('Tool Utility Functions', () => {
     it('should have correct counts per category', () => {
       const byCategory = getToolNamesByCategory();
 
-      expect(byCategory.notebook.length).toBe(9);
+      expect(byCategory.notebook.length).toBe(11);
       expect(byCategory.kernel.length).toBe(5);
       expect(byCategory.execution.length).toBe(1);
     });
@@ -405,7 +437,9 @@ describe('formatForMCP Functions', () => {
       const tools = [
         readNotebookTool,
         readCellTool,
-        writeCellTool,
+        insertCellTool,
+        updateCellTool,
+        clearNotebookTool,
         listKernelsTool,
         executeCellTool,
       ];
