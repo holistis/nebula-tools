@@ -1,11 +1,66 @@
 /**
- * Nebula Notebook Client - headless API for notebook operations
+ * Nebula Notebook Client - Unified API for Notebook Operations
  *
- * Provides programmatic access to Nebula Notebook's REST API for:
- * - Kernel management (start, stop, restart, interrupt)
- * - Notebook operations (read, write, search)
- * - Code execution with WebSocket streaming
- * - File system operations
+ * This client provides programmatic access to Nebula Notebook, enabling AI agents
+ * and automation tools to manipulate notebooks through a consistent interface.
+ *
+ * ## Architecture
+ *
+ * The client routes operations through Nebula's Operation Router, which transparently
+ * handles both UI-connected and headless modes:
+ *
+ * ```
+ * NebulaClient → HTTP/WS → Operation Router → UI (WebSocket) or Headless (File)
+ * ```
+ *
+ * From the client's perspective, both modes are identical - the router handles
+ * the complexity of determining where to apply operations.
+ *
+ * ## Key Features
+ *
+ * - **Kernel Management**: Start, stop, restart, interrupt Jupyter kernels
+ * - **Cell Operations**: Insert, delete, update, move, duplicate cells
+ * - **Code Execution**: WebSocket streaming with real-time output capture
+ * - **Agent Sessions**: Lock/unlock notebooks to prevent concurrent access
+ * - **Dual Mode**: Works seamlessly with or without UI connected
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * const client = new NebulaClient({ baseUrl: 'http://localhost:8000' });
+ *
+ * // Start agent session (shows indicator in UI)
+ * await client.startAgentSession(path, 'my-agent');
+ *
+ * // Insert a cell
+ * const result = await client.insertCellOp(path, 0, {
+ *   id: 'imports',
+ *   type: 'code',
+ *   content: 'import numpy as np'
+ * });
+ *
+ * // Execute the cell
+ * const execResult = await client.executeCell(path, sessionId, { cellIndex: 0 });
+ *
+ * // End session
+ * await client.endAgentSession(path);
+ * ```
+ *
+ * ## Error Handling
+ *
+ * All methods return `ToolResult<T>` with `success` boolean and either `data` or `error`:
+ *
+ * ```typescript
+ * const result = await client.insertCellOp(path, 0, cell);
+ * if (!result.success) {
+ *   console.error(result.error);
+ *   return;
+ * }
+ * console.log('Inserted cell:', result.data.cellId);
+ * ```
+ *
+ * @see {@link https://github.com/jzthree/nebula-notebook/blob/main/docs/AGENTIC_ARCHITECTURE.md}
+ * @module NebulaClient
  */
 
 import type { Notebook, NotebookCell, CellOutput, CellMetadata, ToolResult } from '../types.js';
@@ -825,6 +880,15 @@ export class NebulaClient {
   // ===========================================================================
   // Operation-Based API (routes through backend to UI or headless)
   // ===========================================================================
+  //
+  // These methods use the Operation Router pattern:
+  // 1. Client sends operation to POST /api/notebook/operation
+  // 2. Backend checks if UI is connected via WebSocket
+  // 3. If UI connected: forwards to UI, UI applies and returns result
+  // 4. If no UI: applies via HeadlessOperationHandler (file-based)
+  //
+  // From the agent's perspective, both paths are identical.
+  // ===========================================================================
 
   /**
    * Apply a notebook operation through the operation router.
@@ -1227,6 +1291,23 @@ export class NebulaClient {
 
   // ===========================================================================
   // Agent Session Management
+  // ===========================================================================
+  //
+  // Agent sessions provide:
+  // 1. UI feedback: Shows "Agent" badge with purple styling when session active
+  // 2. Conflict prevention: Warns if multiple agents try to access same notebook
+  // 3. Session tracking: Records start time and agent ID for diagnostics
+  //
+  // Best practice: Always wrap agent operations in try/finally:
+  //
+  //   await client.startAgentSession(path, 'my-agent');
+  //   try {
+  //     // ... operations ...
+  //   } finally {
+  //     await client.endAgentSession(path);
+  //   }
+  //
+  // In headless mode (no UI), session operations are no-ops that always succeed.
   // ===========================================================================
 
   /**

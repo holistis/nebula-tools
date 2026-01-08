@@ -1,11 +1,66 @@
 /**
- * Nebula Notebook Client - headless API for notebook operations
+ * Nebula Notebook Client - Unified API for Notebook Operations
  *
- * Provides programmatic access to Nebula Notebook's REST API for:
- * - Kernel management (start, stop, restart, interrupt)
- * - Notebook operations (read, write, search)
- * - Code execution with WebSocket streaming
- * - File system operations
+ * This client provides programmatic access to Nebula Notebook, enabling AI agents
+ * and automation tools to manipulate notebooks through a consistent interface.
+ *
+ * ## Architecture
+ *
+ * The client routes operations through Nebula's Operation Router, which transparently
+ * handles both UI-connected and headless modes:
+ *
+ * ```
+ * NebulaClient → HTTP/WS → Operation Router → UI (WebSocket) or Headless (File)
+ * ```
+ *
+ * From the client's perspective, both modes are identical - the router handles
+ * the complexity of determining where to apply operations.
+ *
+ * ## Key Features
+ *
+ * - **Kernel Management**: Start, stop, restart, interrupt Jupyter kernels
+ * - **Cell Operations**: Insert, delete, update, move, duplicate cells
+ * - **Code Execution**: WebSocket streaming with real-time output capture
+ * - **Agent Sessions**: Lock/unlock notebooks to prevent concurrent access
+ * - **Dual Mode**: Works seamlessly with or without UI connected
+ *
+ * ## Usage
+ *
+ * ```typescript
+ * const client = new NebulaClient({ baseUrl: 'http://localhost:8000' });
+ *
+ * // Start agent session (shows indicator in UI)
+ * await client.startAgentSession(path, 'my-agent');
+ *
+ * // Insert a cell
+ * const result = await client.insertCellOp(path, 0, {
+ *   id: 'imports',
+ *   type: 'code',
+ *   content: 'import numpy as np'
+ * });
+ *
+ * // Execute the cell
+ * const execResult = await client.executeCell(path, sessionId, { cellIndex: 0 });
+ *
+ * // End session
+ * await client.endAgentSession(path);
+ * ```
+ *
+ * ## Error Handling
+ *
+ * All methods return `ToolResult<T>` with `success` boolean and either `data` or `error`:
+ *
+ * ```typescript
+ * const result = await client.insertCellOp(path, 0, cell);
+ * if (!result.success) {
+ *   console.error(result.error);
+ *   return;
+ * }
+ * console.log('Inserted cell:', result.data.cellId);
+ * ```
+ *
+ * @see {@link https://github.com/jzthree/nebula-notebook/blob/main/docs/AGENTIC_ARCHITECTURE.md}
+ * @module NebulaClient
  */
 import type { Notebook, NotebookCell, CellOutput, CellMetadata, ToolResult } from '../types.js';
 export interface NebulaClientConfig {
