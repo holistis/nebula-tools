@@ -153,18 +153,47 @@ async function main() {
   console.log('🔬 Double Pendulum Chaos Simulation Demo (with History Tracking)\n');
   console.log('='.repeat(60));
 
-  // Step 1: Create notebook via operation router (routes to UI if connected, keeps mtime in sync)
-  console.log('\n📓 Creating notebook via operation router...');
-  const createResult = await client.createNotebookOp(NOTEBOOK_PATH, {
-    overwrite: true,  // Allow overwriting for demo purposes
-    kernelName: 'python3',
-    kernelDisplayName: 'Python 3'
-  });
-  if (!createResult.success) {
-    console.error('Failed to create notebook:', createResult.error);
-    return;
+  // Step 1: Check if notebook exists and clear it, or create new
+  console.log('\n📓 Checking notebook state...');
+  let notebookExists = false;
+  let existingCellCount = 0;
+
+  try {
+    const notebookResult = await client.readNotebook(NOTEBOOK_PATH);
+    if (notebookResult.success) {
+      notebookExists = true;
+      existingCellCount = notebookResult.data.cells.length;
+      console.log(`  Found existing notebook with ${existingCellCount} cells`);
+    }
+  } catch (e) {
+    // Notebook doesn't exist yet
   }
-  console.log('✓ Notebook created at', NOTEBOOK_PATH, '(mtime:', createResult.data?.mtime, ')');
+
+  // Clear existing cells if notebook has content
+  if (notebookExists && existingCellCount > 0) {
+    console.log('\n🧹 Clearing notebook...');
+    const clearResult = await client.clearNotebook(NOTEBOOK_PATH);
+    if (clearResult.success) {
+      console.log(`  ✓ Cleared ${clearResult.data.deletedCount} cells`);
+    } else {
+      console.error('  Failed to clear notebook:', clearResult.error);
+    }
+  }
+
+  // Create notebook if it doesn't exist
+  if (!notebookExists) {
+    console.log('\n📓 Creating notebook via operation router...');
+    const createResult = await client.createNotebookOp(NOTEBOOK_PATH, {
+      overwrite: true,
+      kernelName: 'python3',
+      kernelDisplayName: 'Python 3'
+    });
+    if (!createResult.success) {
+      console.error('Failed to create notebook:', createResult.error);
+      return;
+    }
+    console.log('✓ Notebook created at', NOTEBOOK_PATH, '(mtime:', createResult.data?.mtime, ')');
+  }
 
   // Step 2: Start kernel (associated with notebook for UI reconnection)
   console.log('\n🔧 Starting Python kernel...');
@@ -177,6 +206,7 @@ async function main() {
   console.log('✓ Kernel started:', sessionId);
 
   // Step 3: Insert cells via operation router (this logs to history!)
+  // Note: Small delay between inserts to avoid race conditions in operation router
   console.log('\n📝 Inserting cells via operation router (history tracked)...');
   for (let i = 0; i < CELLS.length; i++) {
     const cell = CELLS[i];
@@ -191,6 +221,8 @@ async function main() {
     } else {
       console.error(`  ✗ Failed to insert cell ${i}:`, result.error);
     }
+    // Small delay to ensure operation router processes sequentially
+    await new Promise(r => setTimeout(r, 100));
   }
 
   // Step 4: Execute code cells and update outputs via operation router

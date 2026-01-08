@@ -479,6 +479,29 @@ export class NebulaClient {
         return { success: true, data: { totalCells: notebook.cells.length } };
     }
     /**
+     * Clear all cells from a notebook
+     *
+     * Useful for starting fresh without creating a new file.
+     * Returns the number of cells that were deleted.
+     */
+    async clearNotebook(path) {
+        const notebookResult = await this.readNotebook(path);
+        if (!notebookResult.success) {
+            return { success: false, error: notebookResult.error };
+        }
+        const notebook = notebookResult.data;
+        const deletedCount = notebook.cells.length;
+        if (deletedCount === 0) {
+            return { success: true, data: { deletedCount: 0 } };
+        }
+        notebook.cells = [];
+        const writeResult = await this.writeNotebook(notebook);
+        if (!writeResult.success) {
+            return { success: false, error: writeResult.error };
+        }
+        return { success: true, data: { deletedCount } };
+    }
+    /**
      * Move a cell from one position to another within a notebook
      */
     async moveCell(path, fromIndex, toIndex) {

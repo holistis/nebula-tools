@@ -172,6 +172,15 @@ export declare class NebulaClient {
         totalCells: number;
     }>>;
     /**
+     * Clear all cells from a notebook
+     *
+     * Useful for starting fresh without creating a new file.
+     * Returns the number of cells that were deleted.
+     */
+    clearNotebook(path: string): Promise<ToolResult<{
+        deletedCount: number;
+    }>>;
+    /**
      * Move a cell from one position to another within a notebook
      */
     moveCell(path: string, fromIndex: number, toIndex: number): Promise<ToolResult<{
