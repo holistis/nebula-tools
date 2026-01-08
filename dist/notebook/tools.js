@@ -188,4 +188,78 @@ export const searchCellsToolDefinition = {
         required: ['notebookPath', 'query'],
     },
 };
+/**
+ * Read a single cell from a notebook.
+ * More efficient than reading the entire notebook when you only need one cell.
+ */
+export async function readCell(params, client) {
+    if (!params.cellId && params.cellIndex === undefined) {
+        return { success: false, error: 'Must provide cellId or cellIndex' };
+    }
+    const result = await client.readCellOp(params.notebookPath, {
+        cellId: params.cellId,
+        cellIndex: params.cellIndex,
+    });
+    if (!result.success) {
+        return { success: false, error: result.error };
+    }
+    return {
+        success: true,
+        data: {
+            cell: result.data.cell,
+            cellIndex: result.data.cellIndex,
+        },
+    };
+}
+export const readCellToolDefinition = {
+    name: 'notebook_read_cell',
+    description: 'Read a single cell from a notebook by ID or index. More efficient than reading the entire notebook.',
+    parameters: {
+        type: 'object',
+        properties: {
+            notebookPath: { type: 'string', description: 'Path to the notebook file' },
+            cellId: { type: 'string', description: 'Cell ID to read' },
+            cellIndex: { type: 'number', description: 'Cell index to read (0-indexed)' },
+        },
+        required: ['notebookPath'],
+    },
+};
+/**
+ * Read outputs from a single cell.
+ * More efficient than reading the entire notebook when you only need cell outputs.
+ */
+export async function readCellOutput(params, client) {
+    if (!params.cellId && params.cellIndex === undefined) {
+        return { success: false, error: 'Must provide cellId or cellIndex' };
+    }
+    const result = await client.readCellOutputOp(params.notebookPath, {
+        cellId: params.cellId,
+        cellIndex: params.cellIndex,
+    });
+    if (!result.success) {
+        return { success: false, error: result.error };
+    }
+    return {
+        success: true,
+        data: {
+            cellId: result.data.cellId,
+            cellIndex: result.data.cellIndex,
+            outputs: result.data.outputs,
+            executionCount: result.data.executionCount,
+        },
+    };
+}
+export const readCellOutputToolDefinition = {
+    name: 'notebook_read_cell_output',
+    description: 'Read outputs from a single cell by ID or index. More efficient than reading the entire notebook.',
+    parameters: {
+        type: 'object',
+        properties: {
+            notebookPath: { type: 'string', description: 'Path to the notebook file' },
+            cellId: { type: 'string', description: 'Cell ID to read outputs from' },
+            cellIndex: { type: 'number', description: 'Cell index to read outputs from (0-indexed)' },
+        },
+        required: ['notebookPath'],
+    },
+};
 //# sourceMappingURL=tools.js.map

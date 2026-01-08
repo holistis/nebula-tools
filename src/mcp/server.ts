@@ -1,17 +1,13 @@
 /**
  * Nebula MCP Server
  *
- * Implements the Model Context Protocol server for Nebula Notebook.
- * Uses JSON-RPC 2.0 over stdio for communication.
+ * Thin wrapper around the unified tools module.
+ * Implements the Model Context Protocol over stdio (JSON-RPC 2.0).
  */
 
 import * as readline from 'readline';
-import type { Tool, CallToolResult } from './types.js';
 import { NebulaClient } from '../notebook/client.js';
-import { kernelTools, handleKernelTool } from './tools/kernel.js';
-import { notebookTools, handleNotebookTool } from './tools/notebook.js';
-import { executionTools, handleExecutionTool } from './tools/execution.js';
-import { fileTools, handleFileTool } from './tools/files.js';
+import { getToolDefinitions, executeToolForMCP } from '../tools/index.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -29,12 +25,10 @@ interface JsonRpcResponse {
 
 export class NebulaMCPServer {
   private client: NebulaClient;
-  private allTools: Tool[];
 
   constructor() {
     const baseUrl = process.env.NEBULA_URL || 'http://localhost:8000';
     this.client = new NebulaClient({ baseUrl });
-    this.allTools = [...kernelTools, ...notebookTools, ...executionTools, ...fileTools];
   }
 
   private async handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -53,10 +47,12 @@ export class NebulaMCPServer {
           break;
 
         case 'tools/list':
-          result = { tools: this.allTools };
+          // Get tool definitions from the unified tools module
+          result = { tools: getToolDefinitions() };
           break;
 
         case 'tools/call':
+          // Execute tool using the unified executor
           result = await this.handleToolCall(params as { name: string; arguments?: Record<string, unknown> });
           break;
 
@@ -83,35 +79,10 @@ export class NebulaMCPServer {
     }
   }
 
-  private async handleToolCall(params: { name: string; arguments?: Record<string, unknown> }): Promise<CallToolResult> {
+  private async handleToolCall(params: { name: string; arguments?: Record<string, unknown> }) {
     const { name, arguments: args = {} } = params;
-
-    try {
-      // Route to appropriate handler based on tool prefix
-      if (name.startsWith('kernel_') || name === 'list_kernels' || name === 'list_sessions') {
-        return await handleKernelTool(name, args, this.client);
-      }
-      if (name.startsWith('notebook_') || name === 'read_notebook' || name === 'read_cell' || name === 'search_cells') {
-        return await handleNotebookTool(name, args, this.client);
-      }
-      if (name.startsWith('execute_')) {
-        return await handleExecutionTool(name, args, this.client);
-      }
-      if (name.startsWith('file_') || name === 'list_files' || name === 'read_file' || name === 'write_file') {
-        return await handleFileTool(name, args, this.client);
-      }
-
-      return {
-        content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-        isError: true,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        content: [{ type: 'text', text: `Error: ${message}` }],
-        isError: true,
-      };
-    }
+    // Delegate to the unified tool executor
+    return await executeToolForMCP(name, args, this.client);
   }
 
   async start(): Promise<void> {

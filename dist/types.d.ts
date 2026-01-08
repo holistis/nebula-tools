@@ -177,9 +177,27 @@ export interface CreateNotebookOp {
     kernelDisplayName?: string;
 }
 /**
+ * Read a single cell by ID or index
+ */
+export interface ReadCellOp {
+    type: 'readCell';
+    notebookPath: string;
+    cellId?: string;
+    cellIndex?: number;
+}
+/**
+ * Read cell outputs by ID or index
+ */
+export interface ReadCellOutputOp {
+    type: 'readCellOutput';
+    notebookPath: string;
+    cellId?: string;
+    cellIndex?: number;
+}
+/**
  * Union of all notebook operations
  */
-export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp;
+export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp;
 /**
  * Result of applying an operation
  */
@@ -199,6 +217,12 @@ export interface OperationResult {
     path?: string;
     /** File modification time (for createNotebook) */
     mtime?: number;
+    /** Cell data (for readCell operation) */
+    cell?: NotebookCell;
+    /** Cell outputs (for readCellOutput operation) */
+    outputs?: CellOutput[];
+    /** Execution count (for readCellOutput operation) */
+    executionCount?: number;
 }
 /**
  * Message sent to UI to apply an operation

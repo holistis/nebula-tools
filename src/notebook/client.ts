@@ -177,12 +177,29 @@ export class NebulaClient {
   // ===========================================================================
 
   /**
-   * List available kernel specs
+   * List available kernel specs with display names and versions
    */
-  async listKernels(): Promise<ToolResult<string[]>> {
-    const result = await this.fetch<{ kernels: Array<{ name: string }> }>('/api/kernels');
+  async listKernels(): Promise<ToolResult<Array<{
+    name: string;
+    displayName: string;
+    language: string;
+  }>>> {
+    const result = await this.fetch<{
+      kernels: Array<{
+        name: string;
+        display_name: string;
+        language: string;
+      }>;
+    }>('/api/kernels');
     if (!result.success) return { success: false, error: result.error };
-    return { success: true, data: result.data?.kernels.map((k) => k.name) ?? [] };
+    return {
+      success: true,
+      data: result.data?.kernels.map((k) => ({
+        name: k.name,
+        displayName: k.display_name,
+        language: k.language,
+      })) ?? [],
+    };
   }
 
   /**
@@ -1661,6 +1678,176 @@ export class NebulaClient {
     }
 
     return { success: true };
+  }
+
+  // ===========================================================================
+  // Read Operations (single cell, no full notebook read needed)
+  // ===========================================================================
+
+  /**
+   * Read a single cell using the operation router.
+   *
+   * More efficient than readNotebook when you only need one cell.
+   * Routes to UI if connected, otherwise reads from file.
+   */
+  async readCellOp(
+    path: string,
+    options: { cellId?: string; cellIndex?: number }
+  ): Promise<ToolResult<{ cell: NotebookCell; cellIndex: number }>> {
+    const operation: import('../types.js').ReadCellOp = {
+      type: 'readCell',
+      notebookPath: path,
+      cellId: options.cellId,
+      cellIndex: options.cellIndex,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        cell: opResult.cell!,
+        cellIndex: opResult.cellIndex!,
+      },
+    };
+  }
+
+  /**
+   * Read cell outputs using the operation router.
+   *
+   * More efficient than readNotebook when you only need outputs.
+   * Routes to UI if connected, otherwise reads from file.
+   */
+  async readCellOutputOp(
+    path: string,
+    options: { cellId?: string; cellIndex?: number }
+  ): Promise<ToolResult<{ outputs: CellOutput[]; executionCount?: number; cellId: string; cellIndex: number }>> {
+    const operation: import('../types.js').ReadCellOutputOp = {
+      type: 'readCellOutput',
+      notebookPath: path,
+      cellId: options.cellId,
+      cellIndex: options.cellIndex,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        outputs: opResult.outputs || [],
+        executionCount: opResult.executionCount,
+        cellId: opResult.cellId!,
+        cellIndex: opResult.cellIndex!,
+      },
+    };
+  }
+
+  // ===========================================================================
+  // Python Environment Discovery
+  // ===========================================================================
+
+  /**
+   * List available Python environments on the system.
+   *
+   * Discovers Python installations from:
+   * - System Python
+   * - Conda environments
+   * - pyenv versions
+   * - Virtual environments
+   * - Homebrew Python
+   */
+  async listPythonEnvironments(refresh: boolean = false): Promise<ToolResult<Array<{
+    name: string;
+    path: string;
+    version?: string;
+    source: string;
+    isActive?: boolean;
+  }>>> {
+    const result = await this.fetch<{
+      environments: Array<{
+        name: string;
+        path: string;
+        version?: string;
+        source: string;
+        is_active?: boolean;
+      }>;
+    }>(`/api/python/environments?refresh=${refresh}`);
+
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    return {
+      success: true,
+      data: result.data!.environments.map(env => ({
+        name: env.name,
+        path: env.path,
+        version: env.version,
+        source: env.source,
+        isActive: env.is_active,
+      })),
+    };
+  }
+
+  /**
+   * Get detailed information about a Python environment.
+   *
+   * @param pythonPath - Path to the Python executable (optional, uses system Python if not provided)
+   */
+  async getPythonInfo(pythonPath?: string): Promise<ToolResult<{
+    path: string;
+    version: string;
+    packages?: string[];
+  }>> {
+    try {
+      // If no path provided, get info about the first available Python
+      if (!pythonPath) {
+        const envResult = await this.listPythonEnvironments();
+        if (!envResult.success || !envResult.data?.length) {
+          return { success: false, error: 'No Python environments found' };
+        }
+        pythonPath = envResult.data[0].path;
+      }
+
+      // For now, return basic info from the environment list
+      // A more detailed endpoint could be added to the backend
+      const envResult = await this.listPythonEnvironments();
+      if (!envResult.success) {
+        return { success: false, error: envResult.error };
+      }
+
+      const env = envResult.data?.find(e => e.path === pythonPath);
+      if (!env) {
+        return { success: false, error: `Python not found: ${pythonPath}` };
+      }
+
+      return {
+        success: true,
+        data: {
+          path: env.path,
+          version: env.version || 'unknown',
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
   }
 }
 

@@ -267,13 +267,14 @@ export async function handleNotebookTool(name, args, client) {
             if (cellIndex === undefined && cellId === undefined) {
                 return errorResponse('Must provide either cell_index or cell_id');
             }
-            const result = await client.readCell(path, { cellIndex, cellId });
+            // Use operation router - more efficient than reading entire notebook
+            const result = await client.readCellOp(path, { cellIndex, cellId });
             if (!result.success) {
                 return errorResponse(result.error || 'Failed to read cell');
             }
-            const cell = result.data;
+            const { cell, cellIndex: foundIndex } = result.data;
             const lines = [
-                `Cell ${cell.cellIndex} [${cell.type}] id="${cell.cellId}"${cell.executionCount ? ` execution #${cell.executionCount}` : ''}`,
+                `Cell ${foundIndex} [${cell.type}] id="${cell.id}"${cell.executionCount ? ` execution #${cell.executionCount}` : ''}`,
                 '---',
                 cell.content,
             ];
@@ -288,6 +289,30 @@ export async function handleNotebookTool(name, args, client) {
             if (cellIndex === undefined && cellId === undefined) {
                 return errorResponse('Must provide either cell_index or cell_id');
             }
+            // For immediate reads (maxWait=0), use efficient operation router
+            // For polling (maxWait>0), use the polling version that reads repeatedly
+            if (maxWait <= 0) {
+                const result = await client.readCellOutputOp(path, { cellIndex, cellId });
+                if (!result.success) {
+                    return errorResponse(result.error || 'Failed to read outputs');
+                }
+                const data = result.data;
+                const allOutputs = data.outputs;
+                const outputs = outputOffset > 0 ? allOutputs.slice(outputOffset) : allOutputs;
+                const totalOutputs = allOutputs.length;
+                if (outputs.length === 0) {
+                    if (totalOutputs === 0) {
+                        return successResponse(`Cell ${data.cellId}: No outputs`);
+                    }
+                    return successResponse(`Cell ${data.cellId}: No new outputs (offset ${outputOffset}, total ${totalOutputs})`);
+                }
+                const content = [
+                    { type: 'text', text: `Cell ${data.cellId}: ${outputs.length} outputs (offset ${outputOffset}, total ${totalOutputs})\n` },
+                ];
+                content.push(...formatOutputs(outputs));
+                return { content };
+            }
+            // Polling mode - use existing method that reads notebook repeatedly
             const result = await client.readOutput(path, { cellIndex, cellId, outputOffset, maxWait });
             if (!result.success) {
                 return errorResponse(result.error || 'Failed to read outputs');

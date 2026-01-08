@@ -1,12 +1,11 @@
 /**
  * Nebula MCP Server
  *
- * Implements the Model Context Protocol server for Nebula Notebook.
- * Uses JSON-RPC 2.0 over stdio for communication.
+ * Thin wrapper around the unified tools module.
+ * Implements the Model Context Protocol over stdio (JSON-RPC 2.0).
  */
 export declare class NebulaMCPServer {
     private client;
-    private allTools;
     constructor();
     private handleRequest;
     private handleToolCall;

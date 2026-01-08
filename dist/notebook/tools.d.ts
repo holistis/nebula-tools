@@ -158,4 +158,87 @@ export declare const searchCellsToolDefinition: {
         required: string[];
     };
 };
+export interface ReadCellParams {
+    /** Path to the notebook */
+    notebookPath: string;
+    /** Cell ID to read */
+    cellId?: string;
+    /** Cell index to read (0-indexed) */
+    cellIndex?: number;
+}
+export interface ReadCellResult {
+    cell: NotebookCell;
+    cellIndex: number;
+}
+/**
+ * Read a single cell from a notebook.
+ * More efficient than reading the entire notebook when you only need one cell.
+ */
+export declare function readCell(params: ReadCellParams, client: NebulaClient): Promise<ToolResult<ReadCellResult>>;
+export declare const readCellToolDefinition: {
+    name: string;
+    description: string;
+    parameters: {
+        type: "object";
+        properties: {
+            notebookPath: {
+                type: string;
+                description: string;
+            };
+            cellId: {
+                type: string;
+                description: string;
+            };
+            cellIndex: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+export interface ReadCellOutputParams {
+    /** Path to the notebook */
+    notebookPath: string;
+    /** Cell ID to read outputs from */
+    cellId?: string;
+    /** Cell index to read outputs from (0-indexed) */
+    cellIndex?: number;
+}
+export interface ReadCellOutputResult {
+    cellId: string;
+    cellIndex: number;
+    outputs: Array<{
+        type: string;
+        content: string;
+    }>;
+    executionCount?: number;
+}
+/**
+ * Read outputs from a single cell.
+ * More efficient than reading the entire notebook when you only need cell outputs.
+ */
+export declare function readCellOutput(params: ReadCellOutputParams, client: NebulaClient): Promise<ToolResult<ReadCellOutputResult>>;
+export declare const readCellOutputToolDefinition: {
+    name: string;
+    description: string;
+    parameters: {
+        type: "object";
+        properties: {
+            notebookPath: {
+                type: string;
+                description: string;
+            };
+            cellId: {
+                type: string;
+                description: string;
+            };
+            cellIndex: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
 //# sourceMappingURL=tools.d.ts.map

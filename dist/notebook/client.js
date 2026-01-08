@@ -96,13 +96,20 @@ export class NebulaClient {
     // Kernel Operations
     // ===========================================================================
     /**
-     * List available kernel specs
+     * List available kernel specs with display names and versions
      */
     async listKernels() {
         const result = await this.fetch('/api/kernels');
         if (!result.success)
             return { success: false, error: result.error };
-        return { success: true, data: result.data?.kernels.map((k) => k.name) ?? [] };
+        return {
+            success: true,
+            data: result.data?.kernels.map((k) => ({
+                name: k.name,
+                displayName: k.display_name,
+                language: k.language,
+            })) ?? [],
+        };
     }
     /**
      * List active kernel sessions
@@ -1311,6 +1318,136 @@ export class NebulaClient {
             return { success: false, error: opResult.error };
         }
         return { success: true };
+    }
+    // ===========================================================================
+    // Read Operations (single cell, no full notebook read needed)
+    // ===========================================================================
+    /**
+     * Read a single cell using the operation router.
+     *
+     * More efficient than readNotebook when you only need one cell.
+     * Routes to UI if connected, otherwise reads from file.
+     */
+    async readCellOp(path, options) {
+        const operation = {
+            type: 'readCell',
+            notebookPath: path,
+            cellId: options.cellId,
+            cellIndex: options.cellIndex,
+        };
+        const result = await this.applyOperation(operation);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        const opResult = result.data;
+        if (!opResult.success) {
+            return { success: false, error: opResult.error };
+        }
+        return {
+            success: true,
+            data: {
+                cell: opResult.cell,
+                cellIndex: opResult.cellIndex,
+            },
+        };
+    }
+    /**
+     * Read cell outputs using the operation router.
+     *
+     * More efficient than readNotebook when you only need outputs.
+     * Routes to UI if connected, otherwise reads from file.
+     */
+    async readCellOutputOp(path, options) {
+        const operation = {
+            type: 'readCellOutput',
+            notebookPath: path,
+            cellId: options.cellId,
+            cellIndex: options.cellIndex,
+        };
+        const result = await this.applyOperation(operation);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        const opResult = result.data;
+        if (!opResult.success) {
+            return { success: false, error: opResult.error };
+        }
+        return {
+            success: true,
+            data: {
+                outputs: opResult.outputs || [],
+                executionCount: opResult.executionCount,
+                cellId: opResult.cellId,
+                cellIndex: opResult.cellIndex,
+            },
+        };
+    }
+    // ===========================================================================
+    // Python Environment Discovery
+    // ===========================================================================
+    /**
+     * List available Python environments on the system.
+     *
+     * Discovers Python installations from:
+     * - System Python
+     * - Conda environments
+     * - pyenv versions
+     * - Virtual environments
+     * - Homebrew Python
+     */
+    async listPythonEnvironments(refresh = false) {
+        const result = await this.fetch(`/api/python/environments?refresh=${refresh}`);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return {
+            success: true,
+            data: result.data.environments.map(env => ({
+                name: env.name,
+                path: env.path,
+                version: env.version,
+                source: env.source,
+                isActive: env.is_active,
+            })),
+        };
+    }
+    /**
+     * Get detailed information about a Python environment.
+     *
+     * @param pythonPath - Path to the Python executable (optional, uses system Python if not provided)
+     */
+    async getPythonInfo(pythonPath) {
+        try {
+            // If no path provided, get info about the first available Python
+            if (!pythonPath) {
+                const envResult = await this.listPythonEnvironments();
+                if (!envResult.success || !envResult.data?.length) {
+                    return { success: false, error: 'No Python environments found' };
+                }
+                pythonPath = envResult.data[0].path;
+            }
+            // For now, return basic info from the environment list
+            // A more detailed endpoint could be added to the backend
+            const envResult = await this.listPythonEnvironments();
+            if (!envResult.success) {
+                return { success: false, error: envResult.error };
+            }
+            const env = envResult.data?.find(e => e.path === pythonPath);
+            if (!env) {
+                return { success: false, error: `Python not found: ${pythonPath}` };
+            }
+            return {
+                success: true,
+                data: {
+                    path: env.path,
+                    version: env.version || 'unknown',
+                },
+            };
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { success: false, error: message };
+        }
     }
 }
 /**

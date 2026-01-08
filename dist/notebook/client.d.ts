@@ -7,7 +7,7 @@
  * - Code execution with WebSocket streaming
  * - File system operations
  */
-import type { Notebook, CellOutput, CellMetadata, ToolResult } from '../types.js';
+import type { Notebook, NotebookCell, CellOutput, CellMetadata, ToolResult } from '../types.js';
 export interface NebulaClientConfig {
     /** Base URL for Nebula API (default: http://localhost:8000) */
     baseUrl?: string;
@@ -82,9 +82,13 @@ export declare class NebulaClient {
      */
     private fetch;
     /**
-     * List available kernel specs
+     * List available kernel specs with display names and versions
      */
-    listKernels(): Promise<ToolResult<string[]>>;
+    listKernels(): Promise<ToolResult<Array<{
+        name: string;
+        displayName: string;
+        language: string;
+    }>>>;
     /**
      * List active kernel sessions
      */
@@ -365,6 +369,61 @@ export declare class NebulaClient {
      * Update cell outputs using the operation router
      */
     updateOutputsOp(path: string, cellId: string, outputs: CellOutput[], executionCount?: number): Promise<ToolResult<void>>;
+    /**
+     * Read a single cell using the operation router.
+     *
+     * More efficient than readNotebook when you only need one cell.
+     * Routes to UI if connected, otherwise reads from file.
+     */
+    readCellOp(path: string, options: {
+        cellId?: string;
+        cellIndex?: number;
+    }): Promise<ToolResult<{
+        cell: NotebookCell;
+        cellIndex: number;
+    }>>;
+    /**
+     * Read cell outputs using the operation router.
+     *
+     * More efficient than readNotebook when you only need outputs.
+     * Routes to UI if connected, otherwise reads from file.
+     */
+    readCellOutputOp(path: string, options: {
+        cellId?: string;
+        cellIndex?: number;
+    }): Promise<ToolResult<{
+        outputs: CellOutput[];
+        executionCount?: number;
+        cellId: string;
+        cellIndex: number;
+    }>>;
+    /**
+     * List available Python environments on the system.
+     *
+     * Discovers Python installations from:
+     * - System Python
+     * - Conda environments
+     * - pyenv versions
+     * - Virtual environments
+     * - Homebrew Python
+     */
+    listPythonEnvironments(refresh?: boolean): Promise<ToolResult<Array<{
+        name: string;
+        path: string;
+        version?: string;
+        source: string;
+        isActive?: boolean;
+    }>>>;
+    /**
+     * Get detailed information about a Python environment.
+     *
+     * @param pythonPath - Path to the Python executable (optional, uses system Python if not provided)
+     */
+    getPythonInfo(pythonPath?: string): Promise<ToolResult<{
+        path: string;
+        version: string;
+        packages?: string[];
+    }>>;
 }
 /**
  * Create a new Nebula client

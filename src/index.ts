@@ -74,7 +74,7 @@ export {
 } from './circuit-breaker.js';
 
 // =============================================================================
-// Notebook Tools (unique to nebula-tools, standalone)
+// Nebula Client
 // =============================================================================
 export {
   NebulaClient,
@@ -85,6 +85,57 @@ export {
   type WriteCellResult,
 } from './notebook/client.js';
 
+// =============================================================================
+// Unified Tools (single source of truth)
+// =============================================================================
+export {
+  // Tool types
+  type Tool,
+  type ToolDefinition,
+  type ToolResult,
+  type MCPContent,
+
+  // Tool collections
+  allTools,
+  toolsByName,
+  toolCategories,
+  notebookTools,
+  kernelTools,
+  executionTools,
+
+  // Tool utilities
+  getToolDefinitions,
+  executeToolByName,
+  executeToolForMCP,
+  getTool,
+  hasTool,
+  getToolNamesByCategory,
+
+  // Individual notebook tools
+  readNotebookTool,
+  readCellTool,
+  readOutputTool,
+  writeCellTool,
+  deleteCellTool,
+  moveCellTool,
+  duplicateCellTool,
+  searchCellsTool,
+  updateMetadataTool,
+
+  // Individual kernel tools
+  listKernelsTool,
+  kernelStartTool,
+  kernelStopTool,
+  kernelRestartTool,
+  kernelInterruptTool,
+
+  // Individual execution tools
+  executeCellTool,
+} from './tools/index.js';
+
+// =============================================================================
+// Legacy exports (for backwards compatibility)
+// =============================================================================
 export {
   readNotebookCells,
   writeNotebookCell,
@@ -102,26 +153,6 @@ export {
   type SearchCellsParams,
   type SearchCellsResult,
 } from './notebook/tools.js';
-
-// =============================================================================
-// Tool Definitions (for agent integration)
-// =============================================================================
-import {
-  readCellsToolDefinition,
-  writeCellToolDefinition,
-  executeCellToolDefinition,
-  searchCellsToolDefinition,
-} from './notebook/tools.js';
-
-/**
- * All notebook tool definitions for agent integration
- */
-export const notebookToolDefinitions = {
-  notebook_read_cells: readCellsToolDefinition,
-  notebook_write_cell: writeCellToolDefinition,
-  notebook_execute: executeCellToolDefinition,
-  notebook_search: searchCellsToolDefinition,
-};
 
 /**
  * Reference to Gemini CLI tool names available in gemini-cli/tools/
