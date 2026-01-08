@@ -195,9 +195,16 @@ export interface ReadCellOutputOp {
     cellIndex?: number;
 }
 /**
+ * Clear all cells from a notebook
+ */
+export interface ClearNotebookOp {
+    type: 'clearNotebook';
+    notebookPath: string;
+}
+/**
  * Union of all notebook operations
  */
-export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp;
+export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp;
 /**
  * Result of applying an operation
  */
@@ -223,6 +230,8 @@ export interface OperationResult {
     outputs?: CellOutput[];
     /** Execution count (for readCellOutput operation) */
     executionCount?: number;
+    /** Number of cells deleted (for clearNotebook operation) */
+    deletedCount?: number;
 }
 /**
  * Message sent to UI to apply an operation

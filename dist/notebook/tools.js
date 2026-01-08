@@ -2,7 +2,7 @@
  * Notebook tools for agent integration
  */
 export async function readNotebookCells(params, client) {
-    const result = await client.readNotebook(params.notebookPath);
+    const result = await client.readNotebookViaRouter(params.notebookPath);
     if (!result.success) {
         return { success: false, error: result.error };
     }
@@ -26,47 +26,61 @@ export async function readNotebookCells(params, client) {
 }
 // WriteCellResult is imported from client.ts (no re-export to avoid conflicts)
 export async function writeNotebookCell(params, client) {
-    const result = await client.readNotebook(params.notebookPath);
-    if (!result.success) {
-        return { success: false, error: result.error };
-    }
-    const notebook = result.data;
     const cellType = params.cellType || 'code';
-    const newCell = {
-        id: `cell-${Date.now()}`,
-        type: cellType,
-        content: params.content,
-        outputs: [],
-    };
     if (params.cellIndex === -1) {
-        // Append
-        notebook.cells.push(newCell);
-    }
-    else if (params.cellIndex >= 0 && params.cellIndex < notebook.cells.length) {
-        // Update existing
-        notebook.cells[params.cellIndex] = {
-            ...notebook.cells[params.cellIndex],
-            content: params.content,
+        // Append new cell
+        const newCell = {
+            id: `cell-${Date.now()}`,
             type: cellType,
+            content: params.content,
+        };
+        const insertResult = await client.insertCellOp(params.notebookPath, -1, newCell);
+        if (!insertResult.success) {
+            return { success: false, error: insertResult.error };
+        }
+        // Get total cell count
+        const notebookResult = await client.readNotebookViaRouter(params.notebookPath);
+        const totalCells = notebookResult.success ? notebookResult.data.cells.length : insertResult.data.cellIndex + 1;
+        return {
+            success: true,
+            data: {
+                cellIndex: insertResult.data.cellIndex,
+                cellId: insertResult.data.cellId,
+                totalCells,
+            },
         };
     }
     else {
-        return { success: false, error: `Invalid cell index: ${params.cellIndex}` };
+        // Update existing cell - first read to get cell id and validate index
+        const readResult = await client.readCellOp(params.notebookPath, { cellIndex: params.cellIndex });
+        if (!readResult.success) {
+            return { success: false, error: readResult.error || `Invalid cell index: ${params.cellIndex}` };
+        }
+        const cellId = readResult.data.cell.id;
+        // Update content
+        const contentResult = await client.updateContentOp(params.notebookPath, cellId, params.content);
+        if (!contentResult.success) {
+            return { success: false, error: contentResult.error };
+        }
+        // Update type if different
+        if (cellType !== readResult.data.cell.type) {
+            const metaResult = await client.updateMetadataOp(params.notebookPath, cellId, { type: cellType });
+            if (!metaResult.success) {
+                return { success: false, error: metaResult.error };
+            }
+        }
+        // Get total cell count
+        const notebookResult = await client.readNotebookViaRouter(params.notebookPath);
+        const totalCells = notebookResult.success ? notebookResult.data.cells.length : params.cellIndex + 1;
+        return {
+            success: true,
+            data: {
+                cellIndex: params.cellIndex,
+                cellId,
+                totalCells,
+            },
+        };
     }
-    const writeResult = await client.writeNotebook(notebook);
-    if (!writeResult.success) {
-        return { success: false, error: writeResult.error };
-    }
-    const finalIndex = params.cellIndex === -1 ? notebook.cells.length - 1 : params.cellIndex;
-    const finalCellId = notebook.cells[finalIndex].id;
-    return {
-        success: true,
-        data: {
-            cellIndex: finalIndex,
-            cellId: finalCellId,
-            totalCells: notebook.cells.length,
-        },
-    };
 }
 export async function executeCell(params, client) {
     const result = await client.executeCode(params.sessionId, params.code);
@@ -86,7 +100,7 @@ export async function executeCell(params, client) {
  * Simple keyword-based cell search (can be enhanced with embeddings later)
  */
 export async function searchNotebookCells(params, client) {
-    const result = await client.readNotebook(params.notebookPath);
+    const result = await client.readNotebookViaRouter(params.notebookPath);
     if (!result.success) {
         return { success: false, error: result.error };
     }

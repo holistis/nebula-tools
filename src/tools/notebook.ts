@@ -216,19 +216,63 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
       };
     }
 
-    // For polling, use the method that reads repeatedly
-    const result = await client.readOutput(params.path, {
-      cellIndex: params.cell_index,
-      cellId: params.cell_id,
-      outputOffset: params.output_offset,
-      maxWait,
-    });
+    // For polling, implement inline since the method was removed
+    const startTime = Date.now();
+    const pollInterval = 500; // 500ms between polls
+    let lastOutputCount = 0;
 
-    if (!result.success) {
-      return { success: false, error: result.error };
+    while (Date.now() - startTime < maxWait * 1000) {
+      const result = await client.readCellOutputOp(params.path, {
+        cellIndex: params.cell_index,
+        cellId: params.cell_id,
+      });
+
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+
+      const allOutputs = result.data!.outputs;
+      const offset = params.output_offset ?? 0;
+      const newOutputs = offset > 0 ? allOutputs.slice(offset) : allOutputs;
+
+      // If we have new outputs since last poll, return them
+      if (allOutputs.length > lastOutputCount) {
+        return {
+          success: true,
+          data: {
+            cellId: result.data!.cellId,
+            cellIndex: result.data!.cellIndex,
+            outputs: newOutputs,
+            totalOutputs: allOutputs.length,
+          },
+        };
+      }
+
+      lastOutputCount = allOutputs.length;
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
 
-    return { success: true, data: result.data };
+    // Timeout - return current outputs
+    const finalResult = await client.readCellOutputOp(params.path, {
+      cellIndex: params.cell_index,
+      cellId: params.cell_id,
+    });
+
+    if (!finalResult.success) {
+      return { success: false, error: finalResult.error };
+    }
+
+    const offset = params.output_offset ?? 0;
+    const allOutputs = finalResult.data!.outputs;
+    return {
+      success: true,
+      data: {
+        cellId: finalResult.data!.cellId,
+        cellIndex: finalResult.data!.cellIndex,
+        outputs: offset > 0 ? allOutputs.slice(offset) : allOutputs,
+        totalOutputs: allOutputs.length,
+      },
+    };
   },
 
   formatForMCP(result) {
@@ -524,7 +568,7 @@ export const moveCellTool: Tool<MoveCellParams, void> = {
   },
 
   async execute(params, client) {
-    const result = await client.moveCell(params.path, params.from_index, params.to_index);
+    const result = await client.moveCellOp(params.path, params.from_index, params.to_index);
     return result.success ? { success: true } : { success: false, error: result.error };
   },
 
@@ -566,11 +610,24 @@ export const duplicateCellTool: Tool<DuplicateCellParams, DuplicateCellResult> =
   },
 
   async execute(params, client) {
-    const result = await client.duplicateCell(params.path, params.cell_index);
+    // Generate a unique ID for the duplicated cell
+    const newCellId = `cell-dup-${Date.now()}`;
+    const result = await client.duplicateCellOp(params.path, params.cell_index, newCellId);
     if (!result.success) {
       return { success: false, error: result.error };
     }
-    return { success: true, data: result.data };
+
+    // Get total cell count
+    const notebookResult = await client.readNotebookViaRouter(params.path);
+    const totalCells = notebookResult.success ? notebookResult.data!.cells.length : result.data!.cellIndex + 1;
+
+    return {
+      success: true,
+      data: {
+        newCellIndex: result.data!.cellIndex,
+        totalCells,
+      },
+    };
   },
 
   formatForMCP(result) {
@@ -677,11 +734,42 @@ export const updateMetadataTool: Tool<UpdateMetadataParams, UpdateMetadataResult
       return { success: false, error: 'No changes provided' };
     }
 
-    const result = await client.updateCellMetadata(params.path, params.cell_id, params.changes);
+    // Read cell before to get old values
+    const beforeResult = await client.readCellOp(params.path, { cellId: params.cell_id });
+    if (!beforeResult.success) {
+      return { success: false, error: beforeResult.error };
+    }
+    const oldCell = beforeResult.data!.cell;
+    const cellIndex = beforeResult.data!.cellIndex;
+
+    // Apply the update
+    const result = await client.updateMetadataOp(params.path, params.cell_id, params.changes);
     if (!result.success) {
       return { success: false, error: result.error };
     }
-    return { success: true, data: result.data };
+
+    // Compute changes from requested changes and old values
+    const changes: Record<string, { old: unknown; new: unknown }> = {};
+    const oldCellId = 'id' in params.changes ? params.cell_id : undefined;
+    let newCellId = params.cell_id;
+
+    for (const [key, newValue] of Object.entries(params.changes)) {
+      const oldValue = (oldCell as unknown as Record<string, unknown>)[key];
+      changes[key] = { old: oldValue, new: newValue };
+      if (key === 'id') {
+        newCellId = newValue as string;
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        cellId: newCellId,
+        cellIndex,
+        changes,
+        oldCellId,
+      },
+    };
   },
 
   formatForMCP(result) {
@@ -690,7 +778,7 @@ export const updateMetadataTool: Tool<UpdateMetadataParams, UpdateMetadataResult
     }
     const { cellIndex, changes, oldCellId, cellId } = result.data!;
     const changesSummary = Object.entries(changes)
-      .map(([k, v]) => `${k}: ${JSON.stringify(v.old)} → ${JSON.stringify(v.new)}`)
+      .map(([k, v]) => `${k}: ${JSON.stringify((v as {old: unknown; new: unknown}).old)} → ${JSON.stringify((v as {old: unknown; new: unknown}).new)}`)
       .join(', ');
     let msg = `Cell ${cellIndex} metadata updated: ${changesSummary}`;
     if (oldCellId) {

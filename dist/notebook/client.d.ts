@@ -126,14 +126,6 @@ export declare class NebulaClient {
      */
     stopKernel(sessionId: string): Promise<ToolResult<void>>;
     /**
-     * Read a notebook file
-     */
-    readNotebook(path: string): Promise<ToolResult<Notebook>>;
-    /**
-     * Write a notebook file
-     */
-    writeNotebook(notebook: Notebook): Promise<ToolResult<void>>;
-    /**
      * List files in a directory
      */
     listFiles(path?: string): Promise<ToolResult<{
@@ -151,111 +143,9 @@ export declare class NebulaClient {
      */
     writeFile(path: string, content: string): Promise<ToolResult<void>>;
     /**
-     * Check if a cell ID is unique in the notebook
-     */
-    private isIdUnique;
-    /**
-     * Generate a unique ID by appending a suffix if needed
-     */
-    private makeUniqueId;
-    /**
-     * Write (insert or update) a cell in a notebook
-     *
-     * For new cells (cellIndex === -1), provide a cellId.
-     * If the ID already exists, it will be auto-fixed (e.g., "my-cell" -> "my-cell-2").
-     */
-    writeCell(path: string, cellIndex: number, content: string, cellType?: 'code' | 'markdown', cellId?: string): Promise<ToolResult<WriteCellResult>>;
-    /**
-     * Delete a cell from a notebook
-     */
-    deleteCell(path: string, cellIndex: number): Promise<ToolResult<{
-        totalCells: number;
-    }>>;
-    /**
-     * Clear all cells from a notebook
-     *
-     * Useful for starting fresh without creating a new file.
-     * Returns the number of cells that were deleted.
-     */
-    clearNotebook(path: string): Promise<ToolResult<{
-        deletedCount: number;
-    }>>;
-    /**
-     * Move a cell from one position to another within a notebook
-     */
-    moveCell(path: string, fromIndex: number, toIndex: number): Promise<ToolResult<{
-        totalCells: number;
-    }>>;
-    /**
-     * Duplicate a cell, inserting the copy after the original
-     */
-    duplicateCell(path: string, cellIndex: number): Promise<ToolResult<{
-        newCellIndex: number;
-        totalCells: number;
-    }>>;
-    /**
-     * Get metadata for a specific cell
-     */
-    getCellMetadata(path: string, cellIndex: number): Promise<ToolResult<CellMetadata>>;
-    /**
-     * Set metadata for a specific cell (merges with existing metadata)
-     *
-     * This is a low-level method. For validated agent operations, use updateCellMetadata.
-     */
-    setCellMetadata(path: string, cellIndex: number, metadata: Partial<CellMetadata>): Promise<ToolResult<void>>;
-    /**
      * Get the metadata schema from Nebula API
      */
     getMetadataSchema(): Promise<ToolResult<MetadataSchema>>;
-    /**
-     * Update cell metadata (id, type, scrolled, etc.)
-     *
-     * For ID changes, automatically fixes duplicates.
-     * Validates against Nebula's metadata schema.
-     */
-    updateCellMetadata(path: string, cellId: string, changes: Record<string, unknown>): Promise<ToolResult<{
-        cellIndex: number;
-        cellId: string;
-        oldCellId?: string;
-        changes: Record<string, {
-            old: unknown;
-            new: unknown;
-        }>;
-    }>>;
-    /**
-     * Read a single cell from a notebook (content and metadata, not outputs)
-     *
-     * Supports both cell_index (positional) and cell_id (stable).
-     * Use readOutput() for outputs.
-     */
-    readCell(path: string, options: {
-        cellIndex?: number;
-        cellId?: string;
-    }): Promise<ToolResult<{
-        cellIndex: number;
-        cellId: string;
-        type: 'code' | 'markdown';
-        content: string;
-        executionCount?: number;
-    }>>;
-    /**
-     * Read cell outputs for polling execution progress
-     *
-     * Supports both cell_index (positional) and cell_id (stable).
-     * Use outputOffset to skip outputs already seen.
-     * Use maxWait to wait for new outputs (polls every 500ms).
-     */
-    readOutput(path: string, options: {
-        cellIndex?: number;
-        cellId?: string;
-        outputOffset?: number;
-        maxWait?: number;
-    }): Promise<ToolResult<{
-        cellId: string;
-        cellIndex: number;
-        outputs: CellOutput[];
-        totalOutputs: number;
-    }>>;
     /**
      * Execute a cell in a notebook and save the outputs back
      *
@@ -277,7 +167,8 @@ export declare class NebulaClient {
         cellId: string;
     }>>;
     /**
-     * Execute code with incremental saves to notebook
+     * Execute code with incremental saves via operation router
+     * Outputs are sent to UI (if connected) or saved to file via updateOutputs operation
      */
     private executeWithIncrementalSave;
     /**
@@ -405,6 +296,15 @@ export declare class NebulaClient {
         executionCount?: number;
         cellId: string;
         cellIndex: number;
+    }>>;
+    /**
+     * Clear all cells from a notebook using the operation router
+     *
+     * This is the proper way to clear a notebook - routes to UI if connected
+     * or falls back to headless mode. Returns the number of cells deleted.
+     */
+    clearNotebookOp(path: string): Promise<ToolResult<{
+        deletedCount: number;
     }>>;
     /**
      * List available Python environments on the system.

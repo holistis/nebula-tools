@@ -27,7 +27,7 @@ export async function readNotebookCells(
   params: ReadCellsParams,
   client: NebulaClient
 ): Promise<ToolResult<ReadCellsResult>> {
-  const result = await client.readNotebook(params.notebookPath);
+  const result = await client.readNotebookViaRouter(params.notebookPath);
   if (!result.success) {
     return { success: false, error: result.error };
   }
@@ -37,12 +37,12 @@ export async function readNotebookCells(
 
   if (params.cellIndices) {
     cells = params.cellIndices
-      .filter((i) => i >= 0 && i < notebook.cells.length)
-      .map((i) => notebook.cells[i]);
+      .filter((i: number) => i >= 0 && i < notebook.cells.length)
+      .map((i: number) => notebook.cells[i]);
   }
 
   if (!params.includeOutputs) {
-    cells = cells.map((c) => ({ ...c, outputs: undefined }));
+    cells = cells.map((c: NotebookCell) => ({ ...c, outputs: undefined }));
   }
 
   return {
@@ -75,51 +75,68 @@ export async function writeNotebookCell(
   params: WriteCellParams,
   client: NebulaClient
 ): Promise<ToolResult<WriteCellResult>> {
-  const result = await client.readNotebook(params.notebookPath);
-  if (!result.success) {
-    return { success: false, error: result.error };
-  }
-
-  const notebook = result.data!;
   const cellType = params.cellType || 'code';
 
-  const newCell: NotebookCell = {
-    id: `cell-${Date.now()}`,
-    type: cellType,
-    content: params.content,
-    outputs: [],
-  };
-
   if (params.cellIndex === -1) {
-    // Append
-    notebook.cells.push(newCell);
-  } else if (params.cellIndex >= 0 && params.cellIndex < notebook.cells.length) {
-    // Update existing
-    notebook.cells[params.cellIndex] = {
-      ...notebook.cells[params.cellIndex],
-      content: params.content,
+    // Append new cell
+    const newCell = {
+      id: `cell-${Date.now()}`,
       type: cellType,
+      content: params.content,
+    };
+    const insertResult = await client.insertCellOp(params.notebookPath, -1, newCell);
+    if (!insertResult.success) {
+      return { success: false, error: insertResult.error };
+    }
+
+    // Get total cell count
+    const notebookResult = await client.readNotebookViaRouter(params.notebookPath);
+    const totalCells = notebookResult.success ? notebookResult.data!.cells.length : insertResult.data!.cellIndex + 1;
+
+    return {
+      success: true,
+      data: {
+        cellIndex: insertResult.data!.cellIndex,
+        cellId: insertResult.data!.cellId,
+        totalCells,
+      },
     };
   } else {
-    return { success: false, error: `Invalid cell index: ${params.cellIndex}` };
+    // Update existing cell - first read to get cell id and validate index
+    const readResult = await client.readCellOp(params.notebookPath, { cellIndex: params.cellIndex });
+    if (!readResult.success) {
+      return { success: false, error: readResult.error || `Invalid cell index: ${params.cellIndex}` };
+    }
+
+    const cellId = readResult.data!.cell.id;
+
+    // Update content
+    const contentResult = await client.updateContentOp(params.notebookPath, cellId, params.content);
+    if (!contentResult.success) {
+      return { success: false, error: contentResult.error };
+    }
+
+    // Update type if different
+    if (cellType !== readResult.data!.cell.type) {
+      const metaResult = await client.updateMetadataOp(params.notebookPath, cellId, { type: cellType });
+      if (!metaResult.success) {
+        return { success: false, error: metaResult.error };
+      }
+    }
+
+    // Get total cell count
+    const notebookResult = await client.readNotebookViaRouter(params.notebookPath);
+    const totalCells = notebookResult.success ? notebookResult.data!.cells.length : params.cellIndex + 1;
+
+    return {
+      success: true,
+      data: {
+        cellIndex: params.cellIndex,
+        cellId,
+        totalCells,
+      },
+    };
   }
-
-  const writeResult = await client.writeNotebook(notebook);
-  if (!writeResult.success) {
-    return { success: false, error: writeResult.error };
-  }
-
-  const finalIndex = params.cellIndex === -1 ? notebook.cells.length - 1 : params.cellIndex;
-  const finalCellId = notebook.cells[finalIndex].id;
-
-  return {
-    success: true,
-    data: {
-      cellIndex: finalIndex,
-      cellId: finalCellId,
-      totalCells: notebook.cells.length,
-    },
-  };
 }
 
 // ===========================================================================
@@ -185,7 +202,7 @@ export async function searchNotebookCells(
   params: SearchCellsParams,
   client: NebulaClient
 ): Promise<ToolResult<SearchCellsResult>> {
-  const result = await client.readNotebook(params.notebookPath);
+  const result = await client.readNotebookViaRouter(params.notebookPath);
   if (!result.success) {
     return { success: false, error: result.error };
   }
@@ -193,13 +210,13 @@ export async function searchNotebookCells(
   const notebook = result.data!;
   const limit = params.limit || 5;
   const queryLower = params.query.toLowerCase();
-  const queryTerms = queryLower.split(/\s+/).filter((t) => t.length > 2);
+  const queryTerms = queryLower.split(/\s+/).filter((t: string) => t.length > 2);
 
   // Score each cell by keyword overlap
-  const scored = notebook.cells.map((cell, index) => {
+  const scored = notebook.cells.map((cell: NotebookCell, index: number) => {
     const contentLower = cell.content.toLowerCase();
     const outputText = (cell.outputs || [])
-      .map((o) => o.content)
+      .map((o: { content: string }) => o.content)
       .join(' ')
       .toLowerCase();
     const fullText = contentLower + ' ' + outputText;
@@ -226,8 +243,8 @@ export async function searchNotebookCells(
 
   // Sort by score descending, filter out zero scores
   const results = scored
-    .filter((c) => c.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .filter((c: { score: number }) => c.score > 0)
+    .sort((a: { score: number }, b: { score: number }) => b.score - a.score)
     .slice(0, limit);
 
   return {
