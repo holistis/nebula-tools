@@ -204,6 +204,7 @@ async function main() {
   console.log('  ✓ Kernel started:', sessionId);
 
   // Step 3: Insert cells using insert_cell tool (position omitted = append)
+  // Note: Small delay between inserts to avoid race conditions in operation router
   console.log('\n📝 Inserting cells using insert_cell tool...');
   for (let i = 0; i < CELLS.length; i++) {
     const cell = CELLS[i];
@@ -215,6 +216,8 @@ async function main() {
       // position omitted = append (clearer than -1!)
     });
     console.log(`  ✓ Cell ${i}: ${cell.id} (${cell.type})`);
+    // Small delay to ensure operation router processes sequentially
+    await new Promise(r => setTimeout(r, 100));
   }
 
   // Step 4: Execute code cells using execute_cell tool
