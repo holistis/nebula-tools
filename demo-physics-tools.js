@@ -148,7 +148,7 @@ plt.show()`
 ];
 
 async function main() {
-  const client = new NebulaClient({ baseUrl: process.env.NEBULA_URL || 'http://localhost:4000' });
+  const client = new NebulaClient({ baseUrl: process.env.NEBULA_URL || 'http://localhost:8000' });
 
   console.log('🔬 Double Pendulum Chaos Demo (using Tools API)\n');
   console.log('='.repeat(60));
