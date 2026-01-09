@@ -5,7 +5,7 @@ This example demonstrates using the Nebula MCP server with multiple Nebula insta
 ## Scenario
 
 You have:
-- Local Nebula instance running on `http://localhost:4000`
+- Local Nebula instance running on `http://localhost:3000` (default)
 - Remote Nebula instance accessible via SSH tunnel on `http://localhost:8001`
 
 ## Usage
@@ -13,10 +13,10 @@ You have:
 ### 1. Default instance (no base_url specified)
 
 ```python
-# Uses default URL from NEBULA_URL env var (localhost:4000)
+# Uses default URL from NEBULA_URL env var (localhost:3000 by default)
 start_agent_session(path="/home/user/local-notebook.ipynb")
 
-# All operations go to localhost:4000
+# All operations go to localhost:3000
 insert_cell(path="/home/user/local-notebook.ipynb",
             cell_id="cell1",
             content="import pandas as pd")
@@ -53,15 +53,15 @@ end_agent_session(path="/remote/data/analysis.ipynb")
 
 ```python
 # Start both sessions
-start_agent_session(path="/local/notebook1.ipynb")  # → localhost:4000
+start_agent_session(path="/local/notebook1.ipynb")  # → localhost:3000
 start_agent_session(path="/remote/notebook2.ipynb",
                    base_url="http://localhost:8001")  # → localhost:8001
 
 # Work with both simultaneously
-insert_cell(path="/local/notebook1.ipynb", ...)    # → localhost:4000
+insert_cell(path="/local/notebook1.ipynb", ...)    # → localhost:3000
 insert_cell(path="/remote/notebook2.ipynb", ...)   # → localhost:8001
 
-execute_cell(path="/local/notebook1.ipynb", ...)   # → localhost:4000
+execute_cell(path="/local/notebook1.ipynb", ...)   # → localhost:3000
 execute_cell(path="/remote/notebook2.ipynb", ...)  # → localhost:8001
 
 # Clean up
