@@ -51,14 +51,17 @@ Claude Code uses `~/.claude.json` for MCP server configuration.
 **Option 1: Using the CLI (Recommended)**
 
 ```bash
-claude mcp add --scope global \
-  --name nebula-notebook \
-  --command node \
-  --arg /Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js \
-  --env NEBULA_URL=http://localhost:3000
+# Replace /path/to/nebula-tools with your actual path
+claude mcp add --scope user --transport stdio \
+  -e NEBULA_URL=http://localhost:3000 \
+  nebula-notebook -- node /path/to/nebula-tools/bin/nebula-mcp.js
 ```
 
-Replace `/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js` with your actual path.
+**Notes**:
+- `--scope user`: Makes the server available globally across all projects
+- `--transport stdio`: Required for Node.js-based MCP servers
+- The `--` separates options from the command
+- Replace `/path/to/nebula-tools` with your actual absolute path
 
 **Option 2: Manual Configuration**
 
