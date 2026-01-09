@@ -127,6 +127,7 @@ export declare const updateMetadataTool: Tool<UpdateMetadataParams, UpdateMetada
 export interface StartAgentSessionParams {
     path: string;
     agent_id?: string;
+    base_url?: string;
 }
 export interface StartAgentSessionResult {
     warning?: string;

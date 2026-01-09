@@ -556,6 +556,7 @@ export const startAgentSessionTool = {
             properties: {
                 path: { type: 'string', description: 'Path to the notebook file' },
                 agent_id: { type: 'string', description: 'Optional identifier for this agent session' },
+                base_url: { type: 'string', description: 'Optional Nebula server URL (e.g., http://localhost:4000). If not provided, uses the default configured URL. Use this to connect to different Nebula instances (e.g., via SSH tunnel).' },
             },
             required: ['path'],
         },
