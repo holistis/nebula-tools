@@ -24,50 +24,142 @@ Nebula Tools provides programmatic access to Nebula Notebook's functionality, en
 
 **Key insight**: The client doesn't need to know which mode is active. The Operation Router transparently handles both cases.
 
-## Installation
+## Quick Start
 
-```bash
-npm install
-npm run build
-```
+1. **Clone and build**:
+   ```bash
+   git clone https://github.com/jzthree/nebula-tools.git
+   cd nebula-tools
+   npm install
+   npm run build
+   ```
 
-## MCP Server (Claude Desktop / Cursor)
+2. **Start Nebula Notebook** (in a separate terminal):
+   ```bash
+   cd ../nebula-notebook
+   npm run start
+   ```
 
-The Nebula MCP Server exposes notebook functionality to AI clients via the Model Context Protocol.
+3. **Configure your AI client** (see setup sections below)
 
-### Configuration
+## Setup Instructions
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+### Claude Code (CLI)
 
-```json
-{
-  "mcpServers": {
-    "nebula": {
-      "command": "node",
-      "args": ["/path/to/nebula-tools/dist/mcp/index.js"],
-      "env": {
-        "NEBULA_URL": "http://localhost:3000"
-      }
-    }
-  }
-}
-```
+Claude Code automatically discovers MCP servers from your Claude Desktop configuration.
 
-Or using npx:
+1. **Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
-```json
-{
-  "mcpServers": {
-    "nebula": {
-      "command": "npx",
-      "args": ["nebula-mcp"],
-      "env": {
-        "NEBULA_URL": "http://localhost:3000"
-      }
-    }
-  }
-}
-```
+   **Option A: Using local build (recommended for development)**
+   ```json
+   {
+     "mcpServers": {
+       "nebula-notebook": {
+         "command": "node",
+         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
+         "env": {
+           "NEBULA_URL": "http://localhost:3000"
+         }
+       }
+     }
+   }
+   ```
+
+   **Option B: Using npx (if published to npm)**
+   ```json
+   {
+     "mcpServers": {
+       "nebula-notebook": {
+         "command": "npx",
+         "args": ["-y", "nebula-tools"],
+         "env": {
+           "NEBULA_URL": "http://localhost:3000"
+         }
+       }
+     }
+   }
+   ```
+
+2. **Update the path**: Replace `/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js` with your actual path
+
+3. **Set the correct port**: Default is `http://localhost:3000`. If using SSH tunnel or custom port, update `NEBULA_URL` accordingly
+
+4. **Restart Claude Code**: The MCP server will be available in your next session
+
+5. **Verify**: In Claude Code, you should see tools like `mcp__nebula-notebook__read_notebook`, `mcp__nebula-notebook__execute_cell`, etc.
+
+### Claude Desktop
+
+1. **Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+   ```json
+   {
+     "mcpServers": {
+       "nebula-notebook": {
+         "command": "node",
+         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
+         "env": {
+           "NEBULA_URL": "http://localhost:3000"
+         }
+       }
+     }
+   }
+   ```
+
+2. **Restart Claude Desktop**
+
+3. **Verify**: Look for the MCP connection indicator in the UI
+
+### ChatGPT Desktop (MacOS)
+
+ChatGPT Desktop supports MCP servers on MacOS.
+
+1. **Add to ChatGPT config** (`~/Library/Application Support/ChatGPT/config.json`):
+
+   ```json
+   {
+     "mcpServers": {
+       "nebula-notebook": {
+         "command": "node",
+         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
+         "env": {
+           "NEBULA_URL": "http://localhost:3000"
+         }
+       }
+     }
+   }
+   ```
+
+2. **Restart ChatGPT Desktop**
+
+3. **Enable MCP**: In ChatGPT settings, ensure MCP servers are enabled
+
+4. **Verify**: Check that Nebula tools are available in the tool picker
+
+### Cursor IDE
+
+1. **Add to Cursor MCP config** (location varies by OS):
+   - **MacOS**: `~/Library/Application Support/Cursor/mcp.json`
+   - **Linux**: `~/.config/Cursor/mcp.json`
+   - **Windows**: `%APPDATA%\Cursor\mcp.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "nebula-notebook": {
+         "command": "node",
+         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
+         "env": {
+           "NEBULA_URL": "http://localhost:3000"
+         }
+       }
+     }
+   }
+   ```
+
+2. **Restart Cursor**
+
+3. **Verify**: MCP tools should appear in Cursor's AI chat interface
 
 ## Available Tools
 
@@ -214,6 +306,10 @@ const result = await client.insertCellOp(path, 0, {
 |----------|-------------|---------|
 | `NEBULA_URL` | Nebula server URL | `http://localhost:3000` |
 
+**Notes**:
+- Default dev setup uses port 3000
+- For SSH tunnels or custom ports, update `NEBULA_URL` (e.g., `http://localhost:8080`)
+
 ## Development
 
 ```bash
@@ -244,6 +340,57 @@ This creates a double pendulum chaos simulation notebook at `/tmp/double-pendulu
 - Cell insertion
 - Code execution with streaming
 - Output capture
+
+## Troubleshooting
+
+### MCP Server Not Connecting
+
+1. **Check Nebula is running**:
+   ```bash
+   curl http://localhost:3000/api/health
+   ```
+   Expected: `{"status":"ok"}`
+
+2. **Verify the build exists**:
+   ```bash
+   ls -la /path/to/nebula-tools/dist/mcp/index.js
+   ls -la /path/to/nebula-tools/bin/nebula-mcp.js
+   ```
+
+3. **Check MCP server logs**:
+   - **Claude Desktop**: `~/Library/Logs/Claude/mcp*.log`
+   - **Claude Code**: Run with `VERBOSE=1` to see MCP connection logs
+
+4. **Test the MCP server directly**:
+   ```bash
+   cd /path/to/nebula-tools
+   NEBULA_URL=http://localhost:3000 node bin/nebula-mcp.js
+   ```
+   Should start without errors and accept stdin/stdout communication
+
+### Port Configuration
+
+Make sure you're using the correct port:
+```json
+"env": {
+  "NEBULA_URL": "http://localhost:3000"
+}
+```
+
+Default is port 3000. If you're using a custom port or SSH tunnel, update `NEBULA_URL` accordingly.
+
+### Path Issues
+
+- Use **absolute paths** in config files (no `~` or relative paths)
+- On MacOS, replace `/Users/YOUR_USERNAME` with your actual username
+- Verify the path exists: `ls -la /Users/username/path/to/nebula-tools/bin/nebula-mcp.js`
+
+### Permission Issues
+
+Ensure the script is executable:
+```bash
+chmod +x /path/to/nebula-tools/bin/nebula-mcp.js
+```
 
 ## Documentation
 
