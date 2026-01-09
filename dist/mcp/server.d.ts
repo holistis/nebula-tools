@@ -4,28 +4,21 @@
  * Thin wrapper around the unified tools module.
  * Implements the Model Context Protocol over stdio (JSON-RPC 2.0).
  */
+import { NebulaClient } from '../notebook/client.js';
 export declare class NebulaMCPServer {
-    private clients;
-    private sessionUrls;
+    private client;
+    private currentUrl;
     private defaultUrl;
     constructor();
     /**
-     * Get or create a client for the specified URL
+     * Connect to a Nebula server
+     * All subsequent operations will use this connection
      */
-    private getClient;
+    connectToServer(baseUrl?: string): void;
     /**
-     * Get the appropriate client for a notebook path
-     * Uses session URL if available, otherwise default
+     * Get the current active client
      */
-    private getClientForPath;
-    /**
-     * Register a session URL for a notebook path
-     */
-    setSessionUrl(path: string, baseUrl?: string): void;
-    /**
-     * Clear session URL mapping for a notebook path
-     */
-    clearSessionUrl(path: string): void;
+    getClient(): NebulaClient;
     private handleRequest;
     private handleToolCall;
     start(): Promise<void>;

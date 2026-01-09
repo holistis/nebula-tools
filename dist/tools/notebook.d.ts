@@ -124,10 +124,16 @@ export interface UpdateMetadataResult {
     oldCellId?: string;
 }
 export declare const updateMetadataTool: Tool<UpdateMetadataParams, UpdateMetadataResult>;
+export interface ConnectServerParams {
+    base_url?: string;
+}
+export interface ConnectServerResult {
+    url: string;
+}
+export declare const connectServerTool: Tool<ConnectServerParams, ConnectServerResult>;
 export interface StartAgentSessionParams {
     path: string;
     agent_id?: string;
-    base_url?: string;
 }
 export interface StartAgentSessionResult {
     warning?: string;
@@ -141,5 +147,5 @@ export interface EndAgentSessionResult {
     warning?: string;
 }
 export declare const endAgentSessionTool: Tool<EndAgentSessionParams, EndAgentSessionResult>;
-export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<ClearNotebookParams, ClearNotebookResult> | Tool<MoveCellParams, void> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult> | Tool<StartAgentSessionParams, StartAgentSessionResult> | Tool<EndAgentSessionParams, EndAgentSessionResult>)[];
+export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<ClearNotebookParams, ClearNotebookResult> | Tool<MoveCellParams, void> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult> | Tool<ConnectServerParams, ConnectServerResult> | Tool<StartAgentSessionParams, StartAgentSessionResult> | Tool<EndAgentSessionParams, EndAgentSessionResult>)[];
 //# sourceMappingURL=notebook.d.ts.map

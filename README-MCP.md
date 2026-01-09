@@ -46,53 +46,54 @@ After editing the config:
 # Then restart Claude Code
 ```
 
-## Multi-Instance Support
+## Switching Between Nebula Instances
 
-The MCP server now supports connecting to multiple Nebula instances in the same session! This is useful for:
-- Working with notebooks on different servers (local + remote)
-- SSH tunnels to multiple remote machines
-- Development and production environments simultaneously
+You can switch between different Nebula instances using the `connect_server` tool. This is useful for:
+- Switching from local development to remote server (via SSH tunnel)
+- Testing notebooks on different Nebula installations
+- Moving between development and production environments
 
 ### How it works
 
-1. **Default URL**: Set via `NEBULA_URL` environment variable (or defaults to `http://localhost:3000`)
-2. **Per-session URL**: Optionally specify `base_url` when starting an agent session
-3. **Automatic routing**: All subsequent operations on that notebook use the session's URL
+1. **Default connection**: On startup, connects to `NEBULA_URL` (or `http://localhost:3000` by default)
+2. **Switch connections**: Use `connect_server` to change the current server
+3. **All operations use current connection**: Every tool uses the currently connected server
 
-### Example: Working with multiple instances
+### Example: Switching between instances
 
 ```typescript
-// Start session on default instance (localhost:3000)
+// By default, connected to localhost:3000
 start_agent_session(path="/local/notebook.ipynb")
-insert_cell(path="/local/notebook.ipynb", ...)  // → goes to localhost:3000
+insert_cell(path="/local/notebook.ipynb", ...)
 
-// Start session on SSH-tunneled remote instance
-start_agent_session(
-  path="/remote/notebook.ipynb",
-  base_url="http://localhost:8001"  // SSH tunnel to remote server
-)
-insert_cell(path="/remote/notebook.ipynb", ...)  // → goes to localhost:8001
+// Switch to remote server via SSH tunnel
+connect_server(base_url="http://localhost:8001")
 
-// Both sessions are active simultaneously!
-execute_cell(path="/local/notebook.ipynb", ...)   // → localhost:3000
-execute_cell(path="/remote/notebook.ipynb", ...)  // → localhost:8001
+// Now all operations go to the new server
+start_agent_session(path="/remote/notebook.ipynb")
+insert_cell(path="/remote/notebook.ipynb", ...)
+execute_cell(path="/remote/notebook.ipynb", ...)
 
-// Clean up
-end_agent_session(path="/local/notebook.ipynb")   // Clears URL mapping
-end_agent_session(path="/remote/notebook.ipynb")  // Clears URL mapping
+// Switch back to default
+connect_server()  // No base_url = use default
+
+// Back to local server
+insert_cell(path="/local/notebook.ipynb", ...)
 ```
 
-### Session-based URL management
+### Connection management
 
-- Each notebook path maps to one URL
-- URL is set when `start_agent_session` is called
-- All operations use that URL until `end_agent_session` is called
-- If no session exists, operations use the default URL
-- Multiple concurrent sessions on different URLs are supported
+- One active connection at a time
+- `connect_server` switches the current connection
+- All tools automatically use the current connection
+- Simple and predictable - no per-notebook URL tracking
 
 ## Available MCP Tools
 
 Once connected, Claude Code can use these tools:
+
+### Connection Management
+- `connect_server` - Connect to a Nebula server (switches current connection)
 
 ### Notebook Operations
 - `read_notebook` - Read all cells from a notebook
@@ -106,8 +107,8 @@ Once connected, Claude Code can use these tools:
 - `duplicate_cell` - Duplicate a cell
 - `search_cells` - Search for cells by content
 - `update_metadata` - Update cell metadata
-- `start_agent_session` - Start an agent session (locks notebook, optional base_url for multi-instance)
-- `end_agent_session` - End an agent session (unlocks notebook, clears URL mapping)
+- `start_agent_session` - Start an agent session (locks notebook)
+- `end_agent_session` - End an agent session (unlocks notebook)
 
 ### Kernel Operations
 - `list_kernels` - List available kernel specs

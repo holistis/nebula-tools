@@ -24,14 +24,16 @@ interface JsonRpcResponse {
 }
 
 export class NebulaMCPServer {
-  private clients: Map<string, NebulaClient> = new Map();
-  private sessionUrls: Map<string, string> = new Map(); // notebookPath -> baseUrl
+  private client: NebulaClient;
+  private currentUrl: string;
   private defaultUrl: string;
 
   constructor() {
     // Environment variable: NEBULA_URL (e.g., http://localhost:3000)
     // Default to 3000 (frontend dev server) which proxies to backend
     this.defaultUrl = process.env.NEBULA_URL || 'http://localhost:3000';
+    this.currentUrl = this.defaultUrl;
+    this.client = new NebulaClient({ baseUrl: this.currentUrl });
 
     // Log configuration on startup (to stderr, not stdout which is for JSON-RPC)
     console.error(`[Nebula MCP] Default URL: ${this.defaultUrl}`);
@@ -42,43 +44,25 @@ export class NebulaMCPServer {
   }
 
   /**
-   * Get or create a client for the specified URL
+   * Connect to a Nebula server
+   * All subsequent operations will use this connection
    */
-  private getClient(baseUrl: string): NebulaClient {
-    if (!this.clients.has(baseUrl)) {
-      console.error(`[Nebula MCP] Creating new client for: ${baseUrl}`);
-      this.clients.set(baseUrl, new NebulaClient({ baseUrl }));
-    }
-    return this.clients.get(baseUrl)!;
-  }
-
-  /**
-   * Get the appropriate client for a notebook path
-   * Uses session URL if available, otherwise default
-   */
-  private getClientForPath(path: string): NebulaClient {
-    const url = this.sessionUrls.get(path) || this.defaultUrl;
-    return this.getClient(url);
-  }
-
-  /**
-   * Register a session URL for a notebook path
-   */
-  setSessionUrl(path: string, baseUrl?: string): void {
+  connectToServer(baseUrl?: string): void {
     const url = baseUrl || this.defaultUrl;
-    this.sessionUrls.set(path, url);
-    console.error(`[Nebula MCP] Session registered: ${path} -> ${url}`);
+    if (url !== this.currentUrl) {
+      this.currentUrl = url;
+      this.client = new NebulaClient({ baseUrl: url });
+      console.error(`[Nebula MCP] Connected to: ${url}`);
+    } else {
+      console.error(`[Nebula MCP] Already connected to: ${url}`);
+    }
   }
 
   /**
-   * Clear session URL mapping for a notebook path
+   * Get the current active client
    */
-  clearSessionUrl(path: string): void {
-    if (this.sessionUrls.has(path)) {
-      const url = this.sessionUrls.get(path);
-      this.sessionUrls.delete(path);
-      console.error(`[Nebula MCP] Session cleared: ${path} (was ${url})`);
-    }
+  getClient(): NebulaClient {
+    return this.client;
   }
 
   private async handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> {
@@ -136,25 +120,17 @@ export class NebulaMCPServer {
     console.error(`[Nebula MCP] Executing tool: ${name}`);
 
     try {
-      // Special handling for start_agent_session: register URL before execution
-      if (name === 'start_agent_session') {
-        const { path, base_url } = args as { path?: string; base_url?: string };
-        if (path) {
-          this.setSessionUrl(path, base_url);
-        }
+      // Special handling for connect_server
+      if (name === 'connect_server') {
+        const { base_url } = args as { base_url?: string };
+        this.connectToServer(base_url);
+        return {
+          content: [{ type: 'text', text: `Connected to ${this.currentUrl}` }],
+        };
       }
 
-      // Get the appropriate client based on the notebook path
-      const path = (args as { path?: string }).path;
-      const client = path ? this.getClientForPath(path) : this.getClient(this.defaultUrl);
-
-      // Delegate to the unified tool executor
-      const result = await executeToolForMCP(name, args, client);
-
-      // Special handling for end_agent_session: clean up URL mapping
-      if (name === 'end_agent_session' && path) {
-        this.clearSessionUrl(path);
-      }
+      // Delegate to the unified tool executor with current client
+      const result = await executeToolForMCP(name, args, this.client);
 
       if (result.isError) {
         console.error(`[Nebula MCP] Tool ${name} failed: ${JSON.stringify(result.content)}`);
@@ -177,8 +153,8 @@ export class NebulaMCPServer {
 
     console.error('='.repeat(60));
     console.error('Nebula MCP Server Started');
-    console.error(`Default URL: ${this.defaultUrl}`);
-    console.error(`Multi-instance: Sessions can specify custom base_url`);
+    console.error(`Connected to: ${this.currentUrl}`);
+    console.error(`Use connect_server tool to switch instances`);
     console.error(`Protocol: Model Context Protocol (MCP) 2024-11-05`);
     console.error('='.repeat(60));
 

@@ -547,16 +547,39 @@ export const updateMetadataTool = {
         return [{ type: 'text', text: msg }];
     },
 };
+export const connectServerTool = {
+    definition: {
+        name: 'connect_server',
+        description: 'Connect to a Nebula server. All subsequent operations will use this connection. Use this to switch between different Nebula instances (e.g., local vs SSH-tunneled remote).',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                base_url: { type: 'string', description: 'Nebula server URL (e.g., http://localhost:3000). If not provided, connects to the default configured URL.' },
+            },
+        },
+        annotations: { destructiveHint: false },
+    },
+    async execute(params, client) {
+        // This is handled specially by the MCP server
+        // The client parameter here is not used - the MCP server creates a new client
+        return { success: true, data: { url: params.base_url || 'default' } };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        return [{ type: 'text', text: `Connected to ${result.data.url}` }];
+    },
+};
 export const startAgentSessionTool = {
     definition: {
         name: 'start_agent_session',
-        description: 'Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done.',
+        description: 'Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. Use connect_server first if you need to work with a different Nebula instance.',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'Path to the notebook file' },
                 agent_id: { type: 'string', description: 'Optional identifier for this agent session' },
-                base_url: { type: 'string', description: 'Optional Nebula server URL (e.g., http://localhost:4000). If not provided, uses the default configured URL. Use this to connect to different Nebula instances (e.g., via SSH tunnel).' },
             },
             required: ['path'],
         },
@@ -639,6 +662,7 @@ export const notebookTools = [
     duplicateCellTool,
     searchCellsTool,
     updateMetadataTool,
+    connectServerTool,
     startAgentSessionTool,
     endAgentSessionTool,
 ];
