@@ -1,12 +1,29 @@
 {
   "name": "nebula-tools",
   "version": "0.1.0",
-  "description": "Shared tools for Nebula Notebook and Nexus Agentic IDE",
+  "description": "MCP server for Nebula Notebook - Jupyter alternative with AI integration",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "nebula-mcp": "./bin/nebula-mcp.js"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "jupyter",
+    "notebook",
+    "ai",
+    "claude"
+  ],
+  "author": "Your Name",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jzthree/nebula-tools.git"
   },
   "exports": {
     ".": "./dist/index.js",
@@ -22,7 +39,9 @@
     "dev": "tsc --watch",
     "test": "vitest",
     "clean": "rm -rf dist",
-    "mcp": "node dist/mcp/index.js"
+    "mcp": "node dist/mcp/index.js",
+    "setup-mcp": "node setup-mcp.js",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

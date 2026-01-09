@@ -44,35 +44,88 @@ Nebula Tools provides programmatic access to Nebula Notebook's functionality, en
 
 ## Setup Instructions
 
-### Claude Code (CLI)
+### Automated Setup (Recommended)
+
+Run the interactive setup script to automatically configure all detected AI tools:
+
+```bash
+npm run setup-mcp
+```
+
+**What it does**:
+- 🔍 Detects installed AI tools (Claude Code, Claude Desktop, Cursor, Gemini CLI, Codex CLI)
+- 💾 Creates timestamped backups of existing configs
+- ⚙️ Configures Nebula MCP server for each detected tool
+- ✅ Shows verification commands for each tool
+
+**Example output**:
+```
+🔍 Detecting installed AI tools...
+
+Found:
+  ✓ Claude Code
+  ✓ Cursor IDE
+  ✓ Gemini CLI
+
+📦 Nebula MCP server will be configured at:
+    /Users/username/nebula-tools/bin/nebula-mcp.js
+
+⚙️  Environment: NEBULA_URL=http://localhost:3000
+
+⚙️  Configure Nebula MCP for:
+    [✓] Claude Code (~/.claude.json)
+    [✓] Cursor IDE (~/.cursor/mcp.json)
+    [✓] Gemini CLI (~/.gemini/settings.json)
+
+Continue? (y/N): y
+
+💾 Backing up configs...
+✓ Backed up .claude.json → .claude.json.backup-1234567890
+✓ Backed up mcp.json → mcp.json.backup-1234567890
+
+⚙️  Configuring Claude Code...
+✓ Added nebula-notebook to .claude.json
+
+⚙️  Configuring Cursor...
+✓ Added nebula-notebook to mcp.json
+
+⚙️  Configuring Gemini CLI...
+✓ Added nebula-notebook to settings.json
+
+✅ Setup complete! Restart your AI tools to use Nebula MCP.
+```
+
+**Environment Variables**:
+- `NEBULA_URL`: Override default server URL (default: `http://localhost:3000`)
+  ```bash
+  NEBULA_URL=http://localhost:8080 npm run setup-mcp
+  ```
+
+### Manual Setup
+
+#### Claude Code (CLI)
 
 Claude Code uses `~/.claude.json` for MCP server configuration.
 
-**Option 1: Using the CLI (Recommended)**
+**Option 1: Using the CLI**
 
 ```bash
-# Replace /path/to/nebula-tools with your actual path
-claude mcp add --scope user --transport stdio \
-  -e NEBULA_URL=http://localhost:3000 \
-  nebula-notebook -- node /path/to/nebula-tools/bin/nebula-mcp.js
+# Replace /path/to/nebula-tools with your actual absolute path
+claude mcp add --scope user -e NEBULA_URL=http://localhost:3000 \
+  --transport stdio nebula-notebook -- \
+  node /path/to/nebula-tools/bin/nebula-mcp.js
 ```
-
-**Notes**:
-- `--scope user`: Makes the server available globally across all projects
-- `--transport stdio`: Required for Node.js-based MCP servers
-- The `--` separates options from the command
-- Replace `/path/to/nebula-tools` with your actual absolute path
 
 **Option 2: Manual Configuration**
 
-Edit `~/.claude.json` directly:
+Edit `~/.claude.json` and add to the top-level `mcpServers` object:
 
 ```json
 {
   "mcpServers": {
     "nebula-notebook": {
       "command": "node",
-      "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
       "env": {
         "NEBULA_URL": "http://localhost:3000"
       }
@@ -81,80 +134,110 @@ Edit `~/.claude.json` directly:
 }
 ```
 
-**Verify**: In your next Claude Code session, you should see tools like `mcp__nebula-notebook__read_notebook`, `mcp__nebula-notebook__execute_cell`, etc.
+**Note**: If the file has other content like `numStartups`, `autoUpdates`, etc., just add `mcpServers` at the same level.
 
-### Claude Desktop
+**Verify**: Run `claude mcp list` or check for tools like `mcp__nebula-notebook__read_notebook` in your next session.
 
-1. **Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+#### Claude Desktop
 
-   ```json
-   {
-     "mcpServers": {
-       "nebula-notebook": {
-         "command": "node",
-         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
-         "env": {
-           "NEBULA_URL": "http://localhost:3000"
-         }
-       }
-     }
-   }
-   ```
+**File**: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
 
-2. **Restart Claude Desktop**
+```json
+{
+  "mcpServers": {
+    "nebula-notebook": {
+      "command": "node",
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
+      "env": {
+        "NEBULA_URL": "http://localhost:3000"
+      }
+    }
+  }
+}
+```
 
-3. **Verify**: Look for the MCP connection indicator in the UI
+Restart Claude Desktop and look for the MCP connection indicator.
 
-### ChatGPT Desktop (MacOS)
+#### Cursor IDE
 
-ChatGPT Desktop supports MCP servers on MacOS.
+**File**:
+- **Global**: `~/.cursor/mcp.json`
+- **Project**: `.cursor/mcp.json` (in project root)
 
-1. **Add to ChatGPT config** (`~/Library/Application Support/ChatGPT/config.json`):
+```json
+{
+  "mcpServers": {
+    "nebula-notebook": {
+      "command": "node",
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
+      "env": {
+        "NEBULA_URL": "http://localhost:3000"
+      }
+    }
+  }
+}
+```
 
-   ```json
-   {
-     "mcpServers": {
-       "nebula-notebook": {
-         "command": "node",
-         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
-         "env": {
-           "NEBULA_URL": "http://localhost:3000"
-         }
-       }
-     }
-   }
-   ```
+Restart Cursor and verify in Settings → Features → Model Context Protocol.
 
-2. **Restart ChatGPT Desktop**
+#### Gemini CLI
 
-3. **Enable MCP**: In ChatGPT settings, ensure MCP servers are enabled
+**File**: `~/.gemini/settings.json`
 
-4. **Verify**: Check that Nebula tools are available in the tool picker
+**Option 1: Using the CLI**
 
-### Cursor IDE
+```bash
+gemini mcp add --env NEBULA_URL=http://localhost:3000 \
+  nebula-notebook -- node /absolute/path/to/nebula-tools/bin/nebula-mcp.js
+```
 
-1. **Add to Cursor MCP config** (location varies by OS):
-   - **MacOS**: `~/Library/Application Support/Cursor/mcp.json`
-   - **Linux**: `~/.config/Cursor/mcp.json`
-   - **Windows**: `%APPDATA%\Cursor\mcp.json`
+**Option 2: Manual Configuration**
 
-   ```json
-   {
-     "mcpServers": {
-       "nebula-notebook": {
-         "command": "node",
-         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
-         "env": {
-           "NEBULA_URL": "http://localhost:3000"
-         }
-       }
-     }
-   }
-   ```
+```json
+{
+  "mcpServers": {
+    "nebula-notebook": {
+      "command": "node",
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
+      "env": {
+        "NEBULA_URL": "http://localhost:3000"
+      }
+    }
+  }
+}
+```
 
-2. **Restart Cursor**
+#### Codex CLI (OpenAI)
 
-3. **Verify**: MCP tools should appear in Cursor's AI chat interface
+**File**: `~/.codex/config.toml` (TOML format)
+
+**Option 1: Using the CLI**
+
+```bash
+codex mcp add nebula-notebook \
+  --env NEBULA_URL=http://localhost:3000 \
+  -- node /absolute/path/to/nebula-tools/bin/nebula-mcp.js
+```
+
+**Option 2: Manual Configuration**
+
+```toml
+[mcp_servers.nebula-notebook]
+command = "node"
+args = ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"]
+
+[mcp_servers.nebula-notebook.env]
+NEBULA_URL = "http://localhost:3000"
+```
+
+#### ChatGPT Desktop
+
+ChatGPT Desktop does not use a config file for MCP servers. Use one of these methods:
+- **Developer Mode**: Enable in Settings → Connectors → Advanced → Developer mode
+- **Docker MCP Toolkit**: Enable in Docker Desktop settings
+- **Remote MCP**: Import servers via Settings → Connectors
+
+See [OpenAI MCP documentation](https://platform.openai.com/docs/mcp) for details.
 
 ## Available Tools
 
