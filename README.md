@@ -46,7 +46,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
       "command": "node",
       "args": ["/path/to/nebula-tools/dist/mcp/index.js"],
       "env": {
-        "NEBULA_URL": "http://localhost:8000"
+        "NEBULA_URL": "http://localhost:3000"
       }
     }
   }
@@ -62,7 +62,7 @@ Or using npx:
       "command": "npx",
       "args": ["nebula-mcp"],
       "env": {
-        "NEBULA_URL": "http://localhost:8000"
+        "NEBULA_URL": "http://localhost:3000"
       }
     }
   }
@@ -121,7 +121,7 @@ Or using npx:
 import { NebulaClient } from 'nebula-tools';
 
 const client = new NebulaClient({
-  baseUrl: 'http://localhost:8000'
+  baseUrl: 'http://localhost:3000'
 });
 
 // Best practice: Use sessions for agent work
@@ -212,7 +212,7 @@ const result = await client.insertCellOp(path, 0, {
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `NEBULA_URL` | Nebula backend URL | `http://localhost:8000` |
+| `NEBULA_URL` | Nebula server URL | `http://localhost:3000` |
 
 ## Development
 
@@ -235,7 +235,7 @@ node demo-physics-tools.js
 The `demo-physics-tools.js` script demonstrates the full workflow:
 
 ```bash
-# With Nebula running on localhost:8000
+# With Nebula running on localhost:3000 (default)
 node demo-physics-tools.js
 ```
 
