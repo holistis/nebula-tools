@@ -46,47 +46,39 @@ Nebula Tools provides programmatic access to Nebula Notebook's functionality, en
 
 ### Claude Code (CLI)
 
-Claude Code automatically discovers MCP servers from your Claude Desktop configuration.
+Claude Code uses `~/.claude.json` for MCP server configuration.
 
-1. **Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+**Option 1: Using the CLI (Recommended)**
 
-   **Option A: Using local build (recommended for development)**
-   ```json
-   {
-     "mcpServers": {
-       "nebula-notebook": {
-         "command": "node",
-         "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
-         "env": {
-           "NEBULA_URL": "http://localhost:3000"
-         }
-       }
-     }
-   }
-   ```
+```bash
+claude mcp add --scope global \
+  --name nebula-notebook \
+  --command node \
+  --arg /Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js \
+  --env NEBULA_URL=http://localhost:3000
+```
 
-   **Option B: Using npx (if published to npm)**
-   ```json
-   {
-     "mcpServers": {
-       "nebula-notebook": {
-         "command": "npx",
-         "args": ["-y", "nebula-tools"],
-         "env": {
-           "NEBULA_URL": "http://localhost:3000"
-         }
-       }
-     }
-   }
-   ```
+Replace `/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js` with your actual path.
 
-2. **Update the path**: Replace `/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js` with your actual path
+**Option 2: Manual Configuration**
 
-3. **Set the correct port**: Default is `http://localhost:3000`. If using SSH tunnel or custom port, update `NEBULA_URL` accordingly
+Edit `~/.claude.json` directly:
 
-4. **Restart Claude Code**: The MCP server will be available in your next session
+```json
+{
+  "mcpServers": {
+    "nebula-notebook": {
+      "command": "node",
+      "args": ["/Users/YOUR_USERNAME/path/to/nebula-tools/bin/nebula-mcp.js"],
+      "env": {
+        "NEBULA_URL": "http://localhost:3000"
+      }
+    }
+  }
+}
+```
 
-5. **Verify**: In Claude Code, you should see tools like `mcp__nebula-notebook__read_notebook`, `mcp__nebula-notebook__execute_cell`, etc.
+**Verify**: In your next Claude Code session, you should see tools like `mcp__nebula-notebook__read_notebook`, `mcp__nebula-notebook__execute_cell`, etc.
 
 ### Claude Desktop
 
@@ -359,7 +351,7 @@ This creates a double pendulum chaos simulation notebook at `/tmp/double-pendulu
 
 3. **Check MCP server logs**:
    - **Claude Desktop**: `~/Library/Logs/Claude/mcp*.log`
-   - **Claude Code**: Run with `VERBOSE=1` to see MCP connection logs
+   - **Claude Code**: Check `~/.claude.json` config and run with `VERBOSE=1` for debug output
 
 4. **Test the MCP server directly**:
    ```bash
