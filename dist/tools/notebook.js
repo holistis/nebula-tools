@@ -3,6 +3,7 @@
  *
  * Tools for reading, writing, and manipulating notebook cells.
  */
+import { createAdaptivePoller } from '../utils/polling.js';
 // =============================================================================
 // Shared Utilities
 // =============================================================================
@@ -142,9 +143,9 @@ export const readOutputTool = {
                 },
             };
         }
-        // For polling, implement inline since the method was removed
+        // Adaptive polling: start with 50ms, exponentially increase to 1000ms
         const startTime = Date.now();
-        const pollInterval = 500; // 500ms between polls
+        const poller = createAdaptivePoller({ initialInterval: 50, maxInterval: 1000 });
         let lastOutputCount = 0;
         while (Date.now() - startTime < maxWait * 1000) {
             const result = await client.readCellOutputOp(params.path, {
@@ -170,7 +171,8 @@ export const readOutputTool = {
                 };
             }
             lastOutputCount = allOutputs.length;
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
+            await poller.wait();
+            poller.incrementInterval();
         }
         // Timeout - return current outputs
         const finalResult = await client.readCellOutputOp(params.path, {
