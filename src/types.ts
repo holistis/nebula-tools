@@ -292,6 +292,17 @@ export interface OperationResult {
   warning?: string;
   /** Session duration in ms (for endAgentSession operation) */
   sessionDuration?: number;
+  /** Extensible metadata container (Phase 2 ready) */
+  metadata?: {
+    /** Total cells in notebook after operation */
+    totalCells?: number;
+    /** Operation execution time in ms */
+    operationTime?: number;
+    // Future Phase 2 fields:
+    // notebookHash?: string;  // For ETag caching
+    // hasMore?: boolean;      // For pagination
+    // offset?: number;        // For pagination
+  };
 }
 
 /**

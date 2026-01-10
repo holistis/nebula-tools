@@ -1129,7 +1129,11 @@ export class NebulaClient {
   /**
    * Duplicate a cell using the operation router
    */
-  async duplicateCellOp(path: string, cellIndex: number, newCellId: string): Promise<ToolResult<{ cellIndex: number; cellId: string }>> {
+  async duplicateCellOp(path: string, cellIndex: number, newCellId: string): Promise<ToolResult<{
+    cellIndex: number;
+    cellId: string;
+    metadata?: { totalCells?: number; operationTime?: number };
+  }>> {
     const operation: import('../types.js').DuplicateCellOp = {
       type: 'duplicateCell',
       notebookPath: path,
@@ -1152,6 +1156,7 @@ export class NebulaClient {
       data: {
         cellIndex: opResult.cellIndex!,
         cellId: opResult.cellId!,
+        metadata: opResult.metadata  // Phase 2 ready: include metadata from backend
       },
     };
   }
@@ -1265,7 +1270,10 @@ export class NebulaClient {
    * This is the proper way to clear a notebook - routes to UI if connected
    * or falls back to headless mode. Returns the number of cells deleted.
    */
-  async clearNotebookOp(path: string): Promise<ToolResult<{ deletedCount: number }>> {
+  async clearNotebookOp(path: string): Promise<ToolResult<{
+    deletedCount: number;
+    metadata?: { totalCells?: number; operationTime?: number };
+  }>> {
     const operation: import('../types.js').ClearNotebookOp = {
       type: 'clearNotebook',
       notebookPath: path,
@@ -1285,6 +1293,7 @@ export class NebulaClient {
       success: true,
       data: {
         deletedCount: opResult.deletedCount ?? 0,
+        metadata: opResult.metadata  // Phase 2 ready: include metadata from backend
       },
     };
   }

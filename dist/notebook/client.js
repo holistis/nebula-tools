@@ -901,6 +901,7 @@ export class NebulaClient {
             data: {
                 cellIndex: opResult.cellIndex,
                 cellId: opResult.cellId,
+                metadata: opResult.metadata // Phase 2 ready: include metadata from backend
             },
         };
     }
@@ -1011,6 +1012,7 @@ export class NebulaClient {
             success: true,
             data: {
                 deletedCount: opResult.deletedCount ?? 0,
+                metadata: opResult.metadata // Phase 2 ready: include metadata from backend
             },
         };
     }

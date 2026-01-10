@@ -507,26 +507,19 @@ export const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult> =
   },
 
   async execute(params, client) {
-    // Read notebook to get cell count
-    const notebookResult = await client.readNotebookViaRouter(params.path);
-    if (!notebookResult.success) {
-      return { success: false, error: notebookResult.error };
+    // Use single clearNotebook operation instead of N+1 loop (Phase 1 optimization)
+    const result = await client.clearNotebookOp(params.path);
+
+    if (!result.success) {
+      return { success: false, error: result.error };
     }
 
-    const cellCount = notebookResult.data!.cells.length;
-    if (cellCount === 0) {
-      return { success: true, data: { deletedCount: 0 } };
-    }
-
-    // Delete cells from end to start to avoid index shifting
-    for (let i = cellCount - 1; i >= 0; i--) {
-      const result = await client.deleteCellOp(params.path, { cellIndex: i });
-      if (!result.success) {
-        return { success: false, error: `Failed to delete cell ${i}: ${result.error}` };
+    return {
+      success: true,
+      data: {
+        deletedCount: result.data!.deletedCount
       }
-    }
-
-    return { success: true, data: { deletedCount: cellCount } };
+    };
   },
 
   formatForMCP(result) {
@@ -617,9 +610,8 @@ export const duplicateCellTool: Tool<DuplicateCellParams, DuplicateCellResult> =
       return { success: false, error: result.error };
     }
 
-    // Get total cell count
-    const notebookResult = await client.readNotebookViaRouter(params.path);
-    const totalCells = notebookResult.success ? notebookResult.data!.cells.length : result.data!.cellIndex + 1;
+    // Use metadata from response instead of extra read (Phase 1.2 optimization)
+    const totalCells = result.data!.metadata?.totalCells ?? result.data!.cellIndex + 1;
 
     return {
       success: true,

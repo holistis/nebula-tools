@@ -319,6 +319,10 @@ export declare class NebulaClient {
     duplicateCellOp(path: string, cellIndex: number, newCellId: string): Promise<ToolResult<{
         cellIndex: number;
         cellId: string;
+        metadata?: {
+            totalCells?: number;
+            operationTime?: number;
+        };
     }>>;
     /**
      * Update cell outputs using the operation router
@@ -360,6 +364,10 @@ export declare class NebulaClient {
      */
     clearNotebookOp(path: string): Promise<ToolResult<{
         deletedCount: number;
+        metadata?: {
+            totalCells?: number;
+            operationTime?: number;
+        };
     }>>;
     /**
      * Start an agent session (locks notebook for agent use).
