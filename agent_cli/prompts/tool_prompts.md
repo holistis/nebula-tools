@@ -2,6 +2,11 @@
 
 [Back to README](../README.md)
 
+<!--
+Parser notes (not part of the prompt):
+- Each section header is the delimiter for a tool prompt and must remain ASCII.
+- Parsers should ignore tool prompts that do not map to available tool schemas.
+-->
 
 Read tool prompt:
 Reads a file from the local filesystem. You can access any file directly by using this tool.

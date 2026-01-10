@@ -17,13 +17,20 @@ from agents import function_tool, RunContextWrapper, Agent
 from pydantic import BaseModel
 
 from .permissions import AppContext
-from .prompt_loader import load_tool_prompts, load_subagent_prompts
+from .prompt_loader import load_tool_prompts, load_subagent_prompts, render_claude_code_guide_prompt
 
 MAX_LINE_LENGTH = 2000
 DEFAULT_LIMIT = 2000
 
 TOOL_PROMPTS = load_tool_prompts()
 SUBAGENT_PROMPTS = load_subagent_prompts()
+SUBAGENT_DEFAULT_MODEL_LABELS = {
+    "general-purpose": "inherit",
+    "Explore": "haiku",
+    "Plan": "inherit",
+    "statusline-setup": "sonnet",
+    "claude-code-guide": "haiku",
+}
 
 
 class QuestionOption(BaseModel):
@@ -432,22 +439,38 @@ def _is_read_only_command(command: str) -> bool:
 
 
 def _subagent_prompt(agent_type: str) -> str:
-    return SUBAGENT_PROMPTS.get(agent_type, "").strip()
+    prompt = SUBAGENT_PROMPTS.get(agent_type, "").strip()
+    if agent_type == "claude-code-guide" and prompt:
+        return render_claude_code_guide_prompt(prompt)
+    return prompt
 
 
-def _subagent_model(model: Optional[str]) -> str:
+def _resolve_model_label(label: str) -> str:
+    if not label:
+        return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    lowered = label.lower().strip()
+    if lowered.startswith("litellm/"):
+        return label
+    if lowered in {"inherit", "sonnet", "opus"}:
+        return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    if lowered == "haiku":
+        return os.environ.get("OPENAI_FAST_MODEL", "").strip() or os.environ.get(
+            "OPENAI_MODEL", "gpt-4.1-mini"
+        )
+    if "claude" in lowered:
+        return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    if lowered == "gpt-4-mini":
+        return "gpt-4.1-mini"
+    return label.strip()
+
+
+def _subagent_model(agent_type: str, model: Optional[str]) -> str:
     if model:
         cleaned = model.strip()
         if cleaned:
-            lowered = cleaned.lower()
-            if lowered.startswith("litellm/"):
-                return cleaned
-            if "claude" in lowered:
-                return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-            if lowered == "gpt-4-mini":
-                return "gpt-4.1-mini"
-            return cleaned
-    return os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+            return _resolve_model_label(cleaned)
+    default_label = SUBAGENT_DEFAULT_MODEL_LABELS.get(agent_type, "")
+    return _resolve_model_label(default_label)
 
 
 def _build_subagent(agent_type: str, model: Optional[str]) -> Agent[AppContext]:
@@ -457,7 +480,7 @@ def _build_subagent(agent_type: str, model: Optional[str]) -> Agent[AppContext]:
     return Agent(
         name=f"Subagent-{agent_type}",
         instructions=instructions,
-        model=_subagent_model(model),
+        model=_subagent_model(agent_type, model),
         tools=TOOLS,
     )
 

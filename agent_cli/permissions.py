@@ -10,7 +10,7 @@ SAFE_TOOLS = {"Read", "Grep", "Glob", "LS", "Task", "TaskOutput", "AskUserQuesti
 
 @dataclass
 class PermissionState:
-    mode: str = "ask"  # ask | allow | deny
+    mode: str = "ask"  # ask | allow | deny | plan
     auto_approve: bool = False
     approved: set[Tuple[str, str]] = field(default_factory=set)
     denied: set[Tuple[str, str]] = field(default_factory=set)
@@ -33,6 +33,8 @@ class PermissionState:
     def check(self, tool_name: str, target: str) -> bool:
         if self.mode == "allow":
             return True
+        if self.mode == "plan":
+            return tool_name in SAFE_TOOLS
         if self.mode == "deny":
             return False
         if tool_name in SAFE_TOOLS:
@@ -63,6 +65,8 @@ class AppContext:
     read_only: bool = False
     tasks: dict[str, Any] = field(default_factory=dict)
     todos: list[dict[str, str]] = field(default_factory=list)
+    user_context: dict[str, str] = field(default_factory=dict)
+    system_context: dict[str, str] = field(default_factory=dict)
 
     def resolve_path(self, file_path: str) -> Path:
         p = Path(file_path).expanduser()

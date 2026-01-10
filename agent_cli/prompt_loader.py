@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import json
+from typing import Any
 from pathlib import Path
 from datetime import datetime
 import platform
@@ -28,28 +30,267 @@ def _find_prompt_dir() -> Path:
     raise FileNotFoundError("No prompt directory found")
 
 
+def _normalize_markers(text: str) -> str:
+    # Replace common non-ASCII dashes with ASCII hyphen for stable parsing.
+    return text.replace("‑", "-").replace("–", "-").replace("—", "-")
+
+
+def _read_text_or_file(value: str) -> str:
+    if not value:
+        return ""
+    candidate = Path(value).expanduser()
+    if candidate.exists() and candidate.is_file():
+        return candidate.read_text(encoding="utf-8", errors="replace").strip()
+    return value.strip()
+
+
+def _read_text_env(name: str) -> str:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return ""
+    return _read_text_or_file(raw)
+
+
+def _read_json_env(name: str) -> Any:
+    raw = _read_text_env(name)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _strip_html_comments(text: str) -> str:
+    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+
 def _extract_between(text: str, start: str, end: str) -> str:
-    s = text.find(start)
+    norm = _normalize_markers(text)
+    norm_start = _normalize_markers(start)
+    norm_end = _normalize_markers(end)
+    s = norm.find(norm_start)
     if s == -1:
         return ""
-    s = s + len(start)
-    e = text.find(end, s)
+    s = s + len(norm_start)
+    e = norm.find(norm_end, s)
     if e == -1:
-        return text[s:].strip()
-    return text[s:e].strip()
+        return _strip_html_comments(text[s:]).strip()
+    return _strip_html_comments(text[s:e]).strip()
 
 
 def _extract_block(text: str, start: str, end_markers: list[str]) -> str:
-    s = text.find(start)
+    norm = _normalize_markers(text)
+    norm_start = _normalize_markers(start)
+    s = norm.find(norm_start)
     if s == -1:
         return ""
-    s = s + len(start)
+    s = s + len(norm_start)
     tail = text[s:]
-    end_positions = [tail.find(m) for m in end_markers if tail.find(m) != -1]
+    norm_tail = norm[s:]
+    end_positions = [
+        norm_tail.find(_normalize_markers(m))
+        for m in end_markers
+        if norm_tail.find(_normalize_markers(m)) != -1
+    ]
     if not end_positions:
-        return tail.strip()
+        return _strip_html_comments(tail).strip()
     e = min(end_positions)
-    return tail[:e].strip()
+    return _strip_html_comments(tail[:e]).strip()
+
+
+def _load_mcp_clients_from_env() -> list[dict]:
+    raw = os.environ.get("CLAUDE_MCP_CLIENTS", "").strip()
+    if not raw:
+        raw = os.environ.get("CLAUDE_MCP_CLIENTS_FILE", "").strip()
+    if not raw:
+        return []
+    try:
+        payload = _read_text_or_file(raw)
+        data = json.loads(payload)
+    except Exception:
+        return []
+    if isinstance(data, dict):
+        data = data.get("clients") or data.get("mcpClients") or [data]
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _client_is_connected(client: dict) -> bool:
+    status = client.get("type") or client.get("status")
+    if isinstance(status, str):
+        return status.strip().lower() == "connected"
+    if "connected" in client:
+        return bool(client.get("connected"))
+    return True
+
+
+def _client_instructions(client: dict) -> str:
+    if isinstance(client.get("instructions"), str):
+        return client.get("instructions", "").strip()
+    for key in ("serverInfo", "server", "config"):
+        data = client.get(key)
+        if isinstance(data, dict) and isinstance(data.get("instructions"), str):
+            return data.get("instructions", "").strip()
+    return ""
+
+
+def _client_name(client: dict) -> str:
+    for key in ("name", "id"):
+        value = client.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for key in ("serverInfo", "server", "config"):
+        data = client.get(key)
+        if isinstance(data, dict):
+            value = data.get("name")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "MCP Server"
+
+
+def _format_mcp_instructions(clients: list[dict]) -> str:
+    entries = []
+    for client in clients:
+        if not _client_is_connected(client):
+            continue
+        instructions = _client_instructions(client)
+        if not instructions:
+            continue
+        name = _client_name(client)
+        entries.append(f"## {name}\n\n{instructions}")
+    return "\n\n".join(entries).strip()
+
+
+def load_claude_code_guide_config() -> dict:
+    config = {}
+    raw = _read_json_env("CLAUDE_CODE_GUIDE_CONFIG")
+    if isinstance(raw, dict):
+        config.update(raw)
+
+    def _load_list(name: str) -> list:
+        value = _read_json_env(name)
+        return value if isinstance(value, list) else []
+
+    def _load_dict(name: str) -> dict:
+        value = _read_json_env(name)
+        return value if isinstance(value, dict) else {}
+
+    if not config:
+        config["custom_skills"] = _load_list("CLAUDE_CUSTOM_SKILLS")
+        config["custom_agents"] = _load_list("CLAUDE_CUSTOM_AGENTS")
+        config["plugin_skills"] = _load_list("CLAUDE_PLUGIN_SKILLS")
+        config["user_settings"] = _load_dict("CLAUDE_USER_SETTINGS_JSON")
+
+    return config
+
+
+def render_claude_code_guide_prompt(prompt: str) -> str:
+    marker = "\n---\n\n# User's Current Configuration"
+    if marker not in prompt:
+        return prompt.strip()
+    base, _ = prompt.split(marker, 1)
+    base = base.strip()
+
+    config = load_claude_code_guide_config()
+    custom_skills = config.get("custom_skills") or config.get("skills") or []
+    custom_agents = config.get("custom_agents") or config.get("agents") or []
+    plugin_skills = config.get("plugin_skills") or []
+    user_settings = config.get("user_settings") or config.get("settings") or {}
+
+    mcp_servers = config.get("mcp_servers")
+    if not mcp_servers:
+        clients = _load_mcp_clients_from_env()
+        mcp_servers = [
+            _client_name(client)
+            for client in clients
+            if _client_is_connected(client)
+        ]
+
+    sections: list[str] = []
+
+    if custom_skills:
+        items = []
+        for item in custom_skills:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("command") or item.get("id")
+                desc = item.get("description") or item.get("desc") or ""
+            else:
+                name = str(item)
+                desc = ""
+            if name:
+                line = f"- /{name}"
+                if desc:
+                    line += f": {desc}"
+                items.append(line)
+        if items:
+            sections.append("**Available custom skills in this project:**\n" + "\n".join(items))
+
+    if custom_agents:
+        items = []
+        for item in custom_agents:
+            if isinstance(item, dict):
+                name = item.get("agentType") or item.get("name") or item.get("id")
+                desc = item.get("whenToUse") or item.get("description") or ""
+            else:
+                name = str(item)
+                desc = ""
+            if name:
+                line = f"- {name}"
+                if desc:
+                    line += f": {desc}"
+                items.append(line)
+        if items:
+            sections.append("**Available custom agents configured:**\n" + "\n".join(items))
+
+    if mcp_servers:
+        items = []
+        for item in mcp_servers:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("id")
+            else:
+                name = str(item)
+            if name:
+                items.append(f"- {name}")
+        if items:
+            sections.append("**Configured MCP servers:**\n" + "\n".join(items))
+
+    if plugin_skills:
+        items = []
+        for item in plugin_skills:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("command") or item.get("id")
+                desc = item.get("description") or item.get("desc") or ""
+            else:
+                name = str(item)
+                desc = ""
+            if name:
+                line = f"- /{name}"
+                if desc:
+                    line += f": {desc}"
+                items.append(line)
+        if items:
+            sections.append("**Available plugin skills:**\n" + "\n".join(items))
+
+    if user_settings:
+        try:
+            payload = json.dumps(user_settings, indent=2, sort_keys=True)
+        except Exception:
+            payload = str(user_settings)
+        sections.append("**User's settings.json:**\n```json\n" + payload + "\n```")
+
+    if not sections:
+        return base
+
+    block = "\n\n".join(sections)
+    return (
+        base
+        + "\n\n---\n\n# User's Current Configuration\n\n"
+        + "The user has the following custom setup in their environment:\n\n"
+        + block
+        + "\n\nWhen answering questions, consider these configured features and proactively suggest them when relevant."
+    ).strip()
 
 
 def _apply_core_conditionals(
@@ -93,31 +334,58 @@ def _apply_core_conditionals(
     return "\n".join(out).strip()
 
 
-def load_system_prompt() -> str:
+def load_base_prompts() -> list[str]:
     prompt_dir = _find_prompt_dir()
     path = prompt_dir / "system_prompt.md"
     content = _read_prompt_file(path)
-
-    # base prompts
     base_section = _extract_block(
         content,
         "Base system prompt strings",
         ["Core system prompt template"],
     )
     base_prompts = re.findall(r'^"(.+?)"$', base_section, flags=re.MULTILINE)
-    base_prompt = ""
-    if base_prompts:
-        override = os.environ.get("CLAUDE_BASE_PROMPT")
-        if override:
-            base_prompt = override.strip()
-        else:
-            idx_raw = os.environ.get("CLAUDE_BASE_PROMPT_INDEX")
-            if idx_raw and idx_raw.isdigit():
-                idx = int(idx_raw)
-                if 0 <= idx < len(base_prompts):
-                    base_prompt = base_prompts[idx]
-            if not base_prompt:
-                base_prompt = base_prompts[0]
+    return base_prompts
+
+
+def select_base_prompt(
+    base_prompts: list[str],
+    is_non_interactive: bool,
+    has_append_system_prompt: bool,
+) -> str:
+    override = os.environ.get("CLAUDE_BASE_PROMPT")
+    if override:
+        return override.strip()
+    idx_raw = os.environ.get("CLAUDE_BASE_PROMPT_INDEX")
+    if idx_raw and idx_raw.isdigit():
+        idx = int(idx_raw)
+        if 0 <= idx < len(base_prompts):
+            return base_prompts[idx]
+    if is_non_interactive:
+        if has_append_system_prompt and len(base_prompts) > 1:
+            return base_prompts[1]
+        if len(base_prompts) > 2:
+            return base_prompts[2]
+    return base_prompts[0] if base_prompts else ""
+
+
+def load_attribution_header() -> str:
+    return _read_text_env("CLAUDE_ATTRIBUTION_HEADER")
+
+
+def load_system_prompt(
+    root_dir: Path | None = None,
+    tool_list: str | None = None,
+    include_base: bool = True,
+    mcp_clients: list[dict] | None = None,
+    mcp_instructions: str | None = None,
+) -> str:
+    prompt_dir = _find_prompt_dir()
+    path = prompt_dir / "system_prompt.md"
+    content = _read_prompt_file(path)
+
+    # base prompts
+    base_prompts = load_base_prompts()
+    base_prompt = base_prompts[0] if base_prompts else ""
 
     core = _extract_between(
         content,
@@ -127,9 +395,13 @@ def load_system_prompt() -> str:
     if core:
         todo_enabled = os.environ.get("CLAUDE_TODO_AVAILABLE", "1").strip() != "0"
         ask_enabled = os.environ.get("CLAUDE_ASK_USER_AVAILABLE", "1").strip() != "0"
+        output_style_configured = os.environ.get("CLAUDE_OUTPUT_STYLE", "").strip().lower() not in {
+            "",
+            "default",
+        }
         core = _apply_core_conditionals(
             core,
-            output_style_configured=False,
+            output_style_configured=output_style_configured,
             todo_write_available=todo_enabled,
             ask_user_available=ask_enabled,
             keep_coding_instructions=True,
@@ -143,6 +415,14 @@ def load_system_prompt() -> str:
         elif security_lines:
             break
     security_block = "\n".join(security_lines).strip()
+
+    todo_reminder = ""
+    todo_match = re.search(
+        r'"(IMPORTANT: Always use the TodoWrite tool[^"]+)"',
+        _normalize_markers(content),
+    )
+    if todo_match:
+        todo_reminder = todo_match.group(1).strip()
 
     code_refs = _extract_between(
         content,
@@ -162,9 +442,34 @@ def load_system_prompt() -> str:
         ["Scratchpad block", "Reasoning effort block", "MCP Server Instructions block"],
     )
 
+    scratchpad_block = _extract_block(
+        content,
+        "Scratchpad block (wK1; only if enabled):",
+        ["Reasoning effort block", "MCP Server Instructions block", "MCP CLI block"],
+    )
+
+    reasoning_block = _extract_block(
+        content,
+        "Reasoning effort block (NK1; only if configured):",
+        ["MCP Server Instructions block", "MCP CLI block"],
+    )
+
+    mcp_block = _extract_block(
+        content,
+        "MCP Server Instructions block (FK1; only if connected servers provide instructions):",
+        ["MCP CLI block"],
+    )
+
+    mcp_cli_block = _extract_block(
+        content,
+        "MCP CLI block (zA0; appended at top-level system prompt if mcp-cli available):",
+        [],
+    )
+
     # Render env placeholders
-    cwd = str(Path.cwd())
-    is_git = "Yes" if (Path.cwd() / ".git").exists() else "No"
+    root = root_dir or Path.cwd()
+    cwd = str(root)
+    is_git = "Yes" if (root / ".git").exists() else "No"
     os_version = platform.uname().system + " " + platform.uname().release
     today = datetime.now().strftime("%Y-%m-%d")
     model_display = os.environ.get("MODEL_DISPLAY_NAME") or os.environ.get("OPENAI_MODEL") or "unknown"
@@ -195,12 +500,14 @@ def load_system_prompt() -> str:
         )
 
     parts = []
-    if base_prompt:
+    if include_base and base_prompt:
         parts.append(base_prompt)
     if core:
         parts.append(core)
     if security_block:
         parts.append(security_block)
+    if todo_reminder and todo_enabled:
+        parts.append(todo_reminder)
     if code_refs:
         parts.append(code_refs)
     if env_block:
@@ -208,7 +515,62 @@ def load_system_prompt() -> str:
     if notes_block:
         parts.append("Notes:\n" + notes_block if not notes_block.startswith("Notes:") else notes_block)
 
-    return "\n\n".join([p.strip() for p in parts if p.strip()])
+    output_style = os.environ.get("CLAUDE_OUTPUT_STYLE", "").strip()
+    if output_style and output_style.lower() != "default":
+        parts.append(output_style)
+
+    resolved_instructions = mcp_instructions or _read_text_env("CLAUDE_MCP_INSTRUCTIONS")
+    if not resolved_instructions:
+        clients = mcp_clients or _load_mcp_clients_from_env()
+        resolved_instructions = _format_mcp_instructions(clients)
+    if resolved_instructions and mcp_block:
+        mcp_payload = mcp_block.replace(
+            "## {server name}\n{server instructions}",
+            resolved_instructions,
+        )
+        parts.append(mcp_payload)
+
+    scratchpad_path = os.environ.get("CLAUDE_SCRATCHPAD_PATH", "").strip()
+    if scratchpad_path and scratchpad_block:
+        parts.append(scratchpad_block.replace("{scratchpad_path}", scratchpad_path))
+
+    reasoning_effort = os.environ.get("CLAUDE_REASONING_EFFORT", "").strip().lower()
+    if reasoning_effort and reasoning_block:
+        mapped = {
+            "low": "45",
+            "medium": "75",
+            "high": "99",
+        }.get(reasoning_effort, reasoning_effort)
+        parts.append(
+            reasoning_block.replace("{low|medium|high -> 45/75/99}", mapped)
+        )
+
+    assembled = "\n\n".join([p.strip() for p in parts if p.strip()])
+    if tool_list:
+        assembled = assembled.replace("{tool list}", tool_list)
+    else:
+        assembled = re.sub(r"^.*\{tool list\}.*\n?", "", assembled, flags=re.MULTILINE)
+    return assembled.strip()
+
+
+def load_mcp_cli_block() -> str:
+    prompt_dir = _find_prompt_dir()
+    path = prompt_dir / "system_prompt.md"
+    content = _read_prompt_file(path)
+    block = _extract_block(
+        content,
+        "MCP CLI block (zA0; appended at top-level system prompt if mcp-cli available):",
+        [],
+    )
+    if not block:
+        return ""
+    mcp_cli_available = os.environ.get("CLAUDE_MCP_CLI_AVAILABLE", "").strip() in {"1", "true", "yes"}
+    if not mcp_cli_available:
+        return ""
+    mcp_cli_tools = os.environ.get("CLAUDE_MCP_CLI_TOOLS", "").strip()
+    if mcp_cli_tools:
+        return block.replace("{server/tool list}", mcp_cli_tools)
+    return block.strip()
 
 
 def load_tool_prompts() -> dict[str, str]:
@@ -223,7 +585,7 @@ def load_tool_prompts() -> dict[str, str]:
         name = m.group(1).strip()
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
-        body = content[start:end].strip()
+        body = _strip_html_comments(content[start:end]).strip()
         sections[name] = body
     return sections
 
@@ -235,15 +597,37 @@ def load_subagent_prompts() -> dict[str, str]:
         return {}
     content = _read_prompt_file(path)
     sections: dict[str, str] = {}
-    pattern = re.compile(r'^(.*?) agent \\(agentType: "([^"]+)"\\):\\s*$', re.MULTILINE)
+    pattern = re.compile(r'^(.*?) agent \(agentType: "([^"]+)"\):\s*$', re.MULTILINE)
     matches = list(pattern.finditer(content))
     for i, m in enumerate(matches):
         agent_type = m.group(2).strip()
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
-        body = content[start:end].strip()
+        body = _strip_html_comments(content[start:end]).strip()
         sections[agent_type] = body
     return sections
+
+
+def load_plan_mode_prompt(plan_file_path: str, plan_exists: bool) -> str:
+    prompt_dir = _find_prompt_dir()
+    path = prompt_dir / "plan_mode.md"
+    if not path.exists():
+        return ""
+    content = _read_prompt_file(path)
+    lines: list[str] = []
+    for raw in content.splitlines():
+        line = raw.strip()
+        if line.startswith("{If plan exists}"):
+            if plan_exists:
+                lines.append(raw.replace("{If plan exists}", "").strip())
+            continue
+        if line.startswith("{If not}"):
+            if not plan_exists:
+                lines.append(raw.replace("{If not}", "").strip())
+            continue
+        lines.append(raw)
+    text = "\n".join(lines).strip()
+    return text.replace("{planFilePath}", plan_file_path)
 
 
 def load_compaction_prompt() -> tuple[str, str]:

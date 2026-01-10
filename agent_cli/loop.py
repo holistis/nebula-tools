@@ -7,20 +7,32 @@ import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+import re
 
 from agents import RunContextWrapper
 
-from .permissions import AppContext
-from .prompt_loader import load_system_prompt, load_compaction_prompt
+from .permissions import AppContext, SAFE_TOOLS
+from .prompt_loader import (
+    load_system_prompt,
+    load_compaction_prompt,
+    load_base_prompts,
+    select_base_prompt,
+    load_mcp_cli_block,
+    load_plan_mode_prompt,
+    load_attribution_header,
+)
 from .tool_specs import build_openai_tools, stringify_tool_result
 from .tools import RAW_TOOL_MAP
 
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
+SYSTEM_REMINDER_RE = re.compile(r"^<system-reminder>\\n?([\\s\\S]*?)\\n?</system-reminder>$")
+SYSTEM_REMINDER_STRIP_RE = re.compile(r"<system-reminder>[\\s\\S]*?</system-reminder>")
 
 
 @dataclass
 class LoopConfig:
+    backend: str = "openai"
     model: str = DEFAULT_MODEL
     fallback_model: Optional[str] = None
     max_context_chars: int = 200_000
@@ -33,6 +45,22 @@ class LoopConfig:
     tool_log_max_chars: int = 10_000
     trace_log_path: Optional[str] = None
     trace_log_max_chars: int = 10_000
+    custom_system_prompt: Optional[str] = None
+    append_system_prompt: Optional[str] = None
+    non_interactive: bool = False
+    claude_sdk_preset: Optional[str] = None
+    claude_sdk_tools_preset: Optional[str] = None
+    claude_sdk_cli_path: Optional[str] = None
+    claude_sdk_settings: Optional[str] = None
+    claude_sdk_stream: bool = False
+    claude_sdk_compat: bool = False
+    claude_sdk_hooks: bool = False
+    claude_sdk_permission_callback: bool = False
+    claude_sdk_auto_continue: bool = False
+    strip_system_reminders_in_tool_results: bool = False
+    attribution_header: Optional[str] = None
+    mcp_clients: Optional[List[Dict[str, Any]]] = None
+    mcp_instructions: Optional[str] = None
 
 
 @dataclass
@@ -65,6 +93,141 @@ def _estimate_chars(messages: Iterable[Dict[str, Any]]) -> int:
         else:
             total += len(str(content))
     return total
+
+
+def _auto_allow_list(context: AppContext) -> str:
+    perms = context.permissions
+    if perms.mode == "allow" or perms.auto_approve:
+        return "all tools"
+    if perms.mode == "deny":
+        return "none"
+    return ", ".join(sorted(SAFE_TOOLS))
+
+
+def _map_permission_mode_to_claude(mode: str, auto_approve: bool) -> str:
+    if mode == "allow":
+        return "bypassPermissions"
+    if mode == "plan":
+        return "plan"
+    if mode == "deny":
+        return "plan"
+    if auto_approve:
+        return "acceptEdits"
+    return "default"
+
+
+def _append_system_context(system_prompt: str, system_context: Dict[str, str]) -> str:
+    if not system_context:
+        return system_prompt
+    context_block = "\n".join(f"{key}: {value}" for key, value in system_context.items())
+    if not context_block:
+        return system_prompt
+    return "\n\n".join([system_prompt, context_block])
+
+
+def _wrap_user_context(messages: List[Dict[str, Any]], user_context: Dict[str, str]) -> List[Dict[str, Any]]:
+    if not user_context:
+        return messages
+    entries = "\n".join(f"# {key}\n{value}" for key, value in user_context.items())
+    reminder = (
+        "<system-reminder>\n"
+        "As you answer the user's questions, you can use the following context:\n"
+        f"{entries}\n\n"
+        "IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n"
+        "</system-reminder>"
+    )
+    return [{"role": "user", "content": reminder, "isMeta": True}] + messages
+
+
+def _user_context_reminder(user_context: Dict[str, str]) -> str:
+    if not user_context:
+        return ""
+    entries = "\n".join(f"# {key}\n{value}" for key, value in user_context.items())
+    if not entries:
+        return ""
+    return (
+        "<system-reminder>\n"
+        "As you answer the user's questions, you can use the following context:\n"
+        f"{entries}\n\n"
+        "IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n"
+        "</system-reminder>"
+    )
+
+
+def _build_user_prompt(user_input: str, context: AppContext, include_reminders: bool) -> str:
+    prompt = user_input
+    if not include_reminders:
+        return prompt
+    if (context.permissions.mode or "").lower() == "plan":
+        plan_text = _plan_mode_prompt(context.root_dir)
+        if plan_text:
+            prompt = _wrap_system_reminder(plan_text) + "\n\n" + prompt
+    reminder = _user_context_reminder(context.user_context)
+    if reminder:
+        prompt = reminder + "\n\n" + prompt
+    return prompt
+
+
+def _wrap_system_reminder(text: str) -> str:
+    return (
+        "<system-reminder>\n"
+        f"{text}\n"
+        "</system-reminder>"
+    )
+
+
+def _plan_file_path() -> Path:
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
+    plans_dir = config_dir / "plans"
+    return plans_dir
+
+
+def _plan_file_id() -> str:
+    plan_id = os.environ.get("CLAUDE_PLAN_ID", "").strip()
+    if plan_id:
+        return plan_id
+    return "plan"
+
+
+def _plan_mode_prompt(root_dir: Path) -> str:
+    plan_file = _plan_file_path() / f"{_plan_file_id()}.md"
+    plan_exists = plan_file.exists()
+    return load_plan_mode_prompt(str(plan_file), plan_exists)
+
+
+def _inject_plan_mode(messages: List[Dict[str, Any]], root_dir: Path, mode: str) -> List[Dict[str, Any]]:
+    if (mode or "").lower() != "plan":
+        return messages
+    plan_text = _plan_mode_prompt(root_dir)
+    if not plan_text:
+        return messages
+    reminder = _wrap_system_reminder(plan_text)
+    return [{"role": "user", "content": reminder, "isMeta": True}] + messages
+
+
+def _build_system_prompt(context: AppContext, config: LoopConfig) -> str:
+    base_prompts = load_base_prompts()
+    base_prompt = select_base_prompt(
+        base_prompts,
+        config.non_interactive,
+        bool(config.append_system_prompt),
+    )
+    attribution = (config.attribution_header or "").strip() or load_attribution_header()
+    default_body = load_system_prompt(
+        context.root_dir,
+        _auto_allow_list(context),
+        include_base=False,
+        mcp_clients=config.mcp_clients,
+        mcp_instructions=config.mcp_instructions,
+    )
+    custom = config.custom_system_prompt.strip() if config.custom_system_prompt else ""
+    append = config.append_system_prompt.strip() if config.append_system_prompt else ""
+    system_blocks = [custom or default_body]
+    if append:
+        system_blocks.append(append)
+    mcp_cli = load_mcp_cli_block()
+    parts = [p for p in [attribution, base_prompt, *system_blocks, mcp_cli] if p]
+    return "\n\n".join(parts).strip()
 
 
 def _micro_compact(state: LoopState, config: LoopConfig) -> Optional[Dict[str, Any]]:
@@ -169,6 +332,103 @@ def _message_content(message: Any) -> str:
     return getattr(message, "content", "") or ""
 
 
+def _assistant_blocks_text(blocks: Any) -> str:
+    if not blocks:
+        return ""
+    parts: List[str] = []
+    for block in blocks:
+        text = ""
+        if isinstance(block, dict):
+            if block.get("type") == "text":
+                text = str(block.get("text") or "")
+        else:
+            text = getattr(block, "text", "") or ""
+        if text:
+            parts.append(text)
+    return "".join(parts)
+
+
+def _extract_stream_text(event: Any) -> str:
+    if not isinstance(event, dict):
+        return ""
+    delta = event.get("delta")
+    if isinstance(delta, dict):
+        if "text" in delta and isinstance(delta["text"], str):
+            return delta["text"]
+        inner_delta = delta.get("delta")
+        if isinstance(inner_delta, dict) and isinstance(inner_delta.get("text"), str):
+            return inner_delta["text"]
+    if isinstance(event.get("text"), str):
+        return event["text"]
+    return ""
+
+
+def _tool_target(tool_name: str, tool_input: Dict[str, Any]) -> str:
+    if not isinstance(tool_input, dict):
+        return tool_name
+    for key in ("path", "file_path", "filepath", "filename", "directory", "dir", "pattern", "glob"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list) and value:
+            return ", ".join(str(item) for item in value)
+    command = tool_input.get("command") or tool_input.get("cmd")
+    if isinstance(command, str) and command.strip():
+        return command.strip()
+    return tool_name
+
+
+def _hook_value(obj: Any, key: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _extract_system_reminder(text: str) -> Optional[str]:
+    if not isinstance(text, str):
+        return None
+    match = SYSTEM_REMINDER_RE.match(text.strip())
+    if match and match.group(1) is not None:
+        return match.group(1).strip()
+    return None
+
+
+def _strip_system_reminders(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    return SYSTEM_REMINDER_STRIP_RE.sub("", text).strip()
+
+
+def _should_auto_continue(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    phrases = (
+        "should i proceed",
+        "shall i proceed",
+        "would you like me to proceed",
+        "do you want me to proceed",
+        "may i proceed",
+        "can i proceed",
+        "should i begin",
+        "ready to start",
+        "should i start",
+        "should i continue",
+        "would you like me to continue",
+        "do you want me to continue",
+        "plan mode",
+        "approve",
+        "approval",
+    )
+    if any(phrase in lowered for phrase in phrases):
+        return True
+    if lowered.strip().endswith("?") and "proceed" in lowered:
+        return True
+    return False
+
+
 def _serialize_message_for_log(message: Any) -> Any:
     if message is None:
         return None
@@ -260,6 +520,27 @@ def _append_tool_log(config: LoopConfig, entry: Dict[str, Any]) -> None:
         return
 
 
+def _log_system_reminder(
+    config: LoopConfig,
+    reminder: str,
+    source: str,
+    tool_name: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+) -> None:
+    if not reminder:
+        return
+    payload = {
+        "type": "system_reminder",
+        "timestamp": time.time(),
+        "source": source,
+        "tool": tool_name,
+        "tool_call_id": tool_call_id,
+        "content": _truncate_log_value(reminder, config.trace_log_max_chars),
+    }
+    _append_trace_log(config, payload)
+    _append_tool_log(config, payload)
+
+
 def _truncate_nested(value: Any, max_chars: int) -> Any:
     if isinstance(value, str):
         return _truncate_log_value(value, max_chars)
@@ -330,6 +611,16 @@ async def _execute_tools(
             result = await _run_tool(ctx, call["name"], call["args"])
             duration_ms = int((time.time() - start) * 1000)
             result_text = stringify_tool_result(result)
+            reminder = _extract_system_reminder(result_text)
+            stripped_result = _strip_system_reminders(result_text)
+            if reminder:
+                _log_system_reminder(
+                    config,
+                    reminder,
+                    source="tool_result",
+                    tool_name=call["name"],
+                    tool_call_id=call["id"],
+                )
             _append_tool_log(
                 config,
                 {
@@ -340,6 +631,9 @@ async def _execute_tools(
                     "raw_arguments": call.get("raw_arguments"),
                     "duration_ms": duration_ms,
                     "result": _truncate_log_value(result_text, config.tool_log_max_chars),
+                    "result_stripped": _truncate_log_value(stripped_result, config.tool_log_max_chars)
+                    if stripped_result != result_text
+                    else None,
                     "timestamp": time.time(),
                 },
             )
@@ -352,12 +646,20 @@ async def _execute_tools(
                     "timestamp": time.time(),
                     "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
                     "result": _truncate_log_value(result_text, config.trace_log_max_chars),
+                    "result_stripped": _truncate_log_value(stripped_result, config.trace_log_max_chars)
+                    if stripped_result != result_text
+                    else None,
                 },
+            )
+            content_for_model = (
+                stripped_result
+                if config.strip_system_reminders_in_tool_results and stripped_result != result_text
+                else result_text
             )
             results.append(
                 {
                     "tool_call_id": call["id"],
-                    "content": result_text,
+                    "content": content_for_model,
                 }
             )
         else:
@@ -370,6 +672,16 @@ async def _execute_tools(
             for call, result in zip(group, group_results):
                 duration_ms = int((time.time() - starts[call["id"]]) * 1000)
                 result_text = stringify_tool_result(result)
+                reminder = _extract_system_reminder(result_text)
+                stripped_result = _strip_system_reminders(result_text)
+                if reminder:
+                    _log_system_reminder(
+                        config,
+                        reminder,
+                        source="tool_result",
+                        tool_name=call["name"],
+                        tool_call_id=call["id"],
+                    )
                 _append_tool_log(
                     config,
                     {
@@ -380,6 +692,9 @@ async def _execute_tools(
                         "raw_arguments": call.get("raw_arguments"),
                         "duration_ms": duration_ms,
                         "result": _truncate_log_value(result_text, config.tool_log_max_chars),
+                        "result_stripped": _truncate_log_value(stripped_result, config.tool_log_max_chars)
+                        if stripped_result != result_text
+                        else None,
                         "timestamp": time.time(),
                     },
                 )
@@ -392,12 +707,20 @@ async def _execute_tools(
                         "timestamp": time.time(),
                         "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
                         "result": _truncate_log_value(result_text, config.trace_log_max_chars),
+                        "result_stripped": _truncate_log_value(stripped_result, config.trace_log_max_chars)
+                        if stripped_result != result_text
+                        else None,
                     },
+                )
+                content_for_model = (
+                    stripped_result
+                    if config.strip_system_reminders_in_tool_results and stripped_result != result_text
+                    else result_text
                 )
                 results.append(
                     {
                         "tool_call_id": call["id"],
-                        "content": result_text,
+                        "content": content_for_model,
                     }
                 )
     return results
@@ -465,7 +788,7 @@ async def _model_call(
         raise
 
 
-async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
+async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
     try:
         from openai import OpenAI
     except Exception as exc:
@@ -473,7 +796,8 @@ async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
 
     client = OpenAI() if _needs_openai_client(config) else None
     tools = build_openai_tools()
-    system_prompt = load_system_prompt()
+    system_prompt = _build_system_prompt(context, config)
+    system_prompt = _append_system_context(system_prompt, context.system_context)
     _append_trace_log(
         config,
         {
@@ -520,7 +844,13 @@ async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
 
         # Loop until no tool calls
         while True:
-            call_messages = [{"role": "system", "content": system_prompt}] + list(state.messages)
+            wrapped_messages = _inject_plan_mode(
+                list(state.messages),
+                context.root_dir,
+                context.permissions.mode,
+            )
+            wrapped_messages = _wrap_user_context(wrapped_messages, context.user_context)
+            call_messages = [{"role": "system", "content": system_prompt}] + wrapped_messages
             _append_trace_log(
                 config,
                 {
@@ -591,3 +921,287 @@ async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
                         "content": result["content"],
                     }
                 )
+
+
+def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
+    try:
+        from claude_agent_sdk.types import ClaudeAgentOptions
+    except Exception as exc:
+        raise RuntimeError(f"claude-agent-sdk package required: {exc}") from exc
+
+    options = ClaudeAgentOptions()
+    options.model = config.model or None
+    options.fallback_model = config.fallback_model or None
+    options.cwd = str(context.root_dir)
+    if config.claude_sdk_cli_path:
+        options.cli_path = str(Path(config.claude_sdk_cli_path).expanduser())
+    if config.claude_sdk_settings:
+        options.settings = config.claude_sdk_settings
+    options.permission_mode = _map_permission_mode_to_claude(
+        context.permissions.mode,
+        context.permissions.auto_approve,
+    )
+    options.include_partial_messages = bool(config.claude_sdk_stream)
+
+    tools_preset = config.claude_sdk_tools_preset
+    if not tools_preset and config.claude_sdk_preset:
+        tools_preset = config.claude_sdk_preset
+
+    if config.claude_sdk_preset:
+        options.system_prompt = {"type": "preset", "preset": config.claude_sdk_preset}
+        if tools_preset:
+            options.tools = {"type": "preset", "preset": tools_preset}
+    else:
+        system_prompt = _build_system_prompt(context, config)
+        system_prompt = _append_system_context(system_prompt, context.system_context)
+        options.system_prompt = system_prompt
+        if tools_preset:
+            options.tools = {"type": "preset", "preset": tools_preset}
+    return options
+
+
+async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
+    try:
+        from claude_agent_sdk.client import ClaudeSDKClient
+        from claude_agent_sdk import types
+    except Exception as exc:
+        raise RuntimeError(f"claude-agent-sdk package required: {exc}") from exc
+
+    use_preset = bool(config.claude_sdk_preset)
+    options = _build_claude_sdk_options(context, config)
+    compat = config.claude_sdk_compat
+    hooks_enabled = config.claude_sdk_hooks or compat
+    permission_callback_enabled = config.claude_sdk_permission_callback or compat
+    auto_continue = config.claude_sdk_auto_continue
+
+    if permission_callback_enabled:
+        from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
+
+        async def _can_use_tool(tool_name: str, tool_input: Dict[str, Any], _ctx: Any) -> Any:
+            target = _tool_target(tool_name, tool_input or {})
+            allowed = context.permissions.check(tool_name, target)
+            if allowed:
+                return PermissionResultAllow()
+            return PermissionResultDeny(message=f"Denied {tool_name} on {target}", interrupt=False)
+
+        options.can_use_tool = _can_use_tool
+
+    if hooks_enabled:
+        from claude_agent_sdk.types import HookMatcher
+
+        async def _log_pre_tool_use(hook_input: Any, _output: Any, _ctx: Any) -> Dict[str, Any]:
+            tool_name = _hook_value(hook_input, "tool_name")
+            tool_input = _hook_value(hook_input, "tool_input")
+            reminder = None
+            if isinstance(tool_input, str):
+                reminder = _extract_system_reminder(tool_input)
+                if reminder:
+                    _log_system_reminder(
+                        config,
+                        reminder,
+                        source="tool_input",
+                        tool_name=tool_name,
+                    )
+            _append_trace_log(
+                config,
+                {
+                    "type": "tool_call",
+                    "timestamp": time.time(),
+                    "backend": "claude-sdk",
+                    "tool": tool_name,
+                    "args": _truncate_nested(tool_input, config.trace_log_max_chars),
+                },
+            )
+            _append_tool_log(
+                config,
+                {
+                    "type": "tool_call",
+                    "tool": tool_name,
+                    "args": _truncate_nested(tool_input, config.tool_log_max_chars),
+                    "timestamp": time.time(),
+                },
+            )
+            return {}
+
+        async def _log_post_tool_use(hook_input: Any, _output: Any, _ctx: Any) -> Dict[str, Any]:
+            tool_name = _hook_value(hook_input, "tool_name")
+            tool_input = _hook_value(hook_input, "tool_input")
+            tool_response = _hook_value(hook_input, "tool_response")
+            reminder = None
+            stripped_result = None
+            if isinstance(tool_response, str):
+                reminder = _extract_system_reminder(tool_response)
+                stripped_result = _strip_system_reminders(tool_response)
+                if reminder:
+                    _log_system_reminder(
+                        config,
+                        reminder,
+                        source="tool_result",
+                        tool_name=tool_name,
+                    )
+            _append_trace_log(
+                config,
+                {
+                    "type": "tool_result",
+                    "timestamp": time.time(),
+                    "backend": "claude-sdk",
+                    "tool": tool_name,
+                    "args": _truncate_nested(tool_input, config.trace_log_max_chars),
+                    "result": _truncate_nested(tool_response, config.trace_log_max_chars),
+                    "result_stripped": _truncate_log_value(stripped_result, config.trace_log_max_chars)
+                    if isinstance(stripped_result, str) and stripped_result != tool_response
+                    else None,
+                },
+            )
+            _append_tool_log(
+                config,
+                {
+                    "type": "tool_result",
+                    "tool": tool_name,
+                    "args": _truncate_nested(tool_input, config.tool_log_max_chars),
+                    "result": _truncate_nested(tool_response, config.tool_log_max_chars),
+                    "result_stripped": _truncate_log_value(stripped_result, config.tool_log_max_chars)
+                    if isinstance(stripped_result, str) and stripped_result != tool_response
+                    else None,
+                    "timestamp": time.time(),
+                },
+            )
+            return {}
+
+        options.hooks = {
+            "PreToolUse": [HookMatcher(matcher=None, hooks=[_log_pre_tool_use])],
+            "PostToolUse": [HookMatcher(matcher=None, hooks=[_log_post_tool_use])],
+        }
+    if use_preset and (config.custom_system_prompt or config.append_system_prompt):
+        _append_trace_log(
+            config,
+            {
+                "type": "warning",
+                "timestamp": time.time(),
+                "backend": "claude-sdk",
+                "message": "System prompt overrides ignored because claude-sdk preset is active.",
+            },
+        )
+
+    system_prompt_label = (
+        f"preset:{config.claude_sdk_preset}" if use_preset else str(options.system_prompt or "")
+    )
+    _append_trace_log(
+        config,
+        {
+            "type": "system_prompt",
+            "timestamp": time.time(),
+            "backend": "claude-sdk",
+            "model": config.model,
+            "fallback_model": config.fallback_model,
+            "content": _truncate_log_value(system_prompt_label, config.trace_log_max_chars),
+        },
+    )
+
+    async with ClaudeSDKClient(options) as client:
+        while True:
+            try:
+                user_input = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not user_input:
+                continue
+            if user_input in {"/quit", "/exit"}:
+                break
+
+            prompt = _build_user_prompt(user_input, context, include_reminders=not use_preset)
+            _append_trace_log(
+                config,
+                {
+                    "type": "user_input",
+                    "timestamp": time.time(),
+                    "backend": "claude-sdk",
+                    "content": _truncate_log_value(user_input, config.trace_log_max_chars),
+                    "expanded_prompt": _truncate_log_value(prompt, config.trace_log_max_chars)
+                    if prompt != user_input
+                    else None,
+                },
+            )
+            followup_prompt = prompt
+            for _attempt in range(2 if auto_continue else 1):
+                await client.query(followup_prompt)
+
+                output_parts: List[str] = []
+                streamed_text = ""
+                streamed_any = False
+                content = ""
+                try:
+                    async for msg in client.receive_response():
+                        if isinstance(msg, types.StreamEvent):
+                            delta_text = _extract_stream_text(msg.event)
+                            if delta_text:
+                                streamed_any = True
+                                streamed_text += delta_text
+                                print(delta_text, end="", flush=True)
+                        elif isinstance(msg, types.AssistantMessage):
+                            if not streamed_any:
+                                text = _assistant_blocks_text(msg.content)
+                                if text:
+                                    output_parts.append(text)
+                        if isinstance(msg, types.ResultMessage):
+                            _append_trace_log(
+                                config,
+                                {
+                                    "type": "result",
+                                    "timestamp": time.time(),
+                                    "backend": "claude-sdk",
+                                    "session_id": msg.session_id,
+                                    "is_error": msg.is_error,
+                                    "usage": _truncate_nested(msg.usage, config.trace_log_max_chars),
+                                    "total_cost_usd": msg.total_cost_usd,
+                                },
+                            )
+                except Exception as exc:
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "warning",
+                            "timestamp": time.time(),
+                            "backend": "claude-sdk",
+                            "message": f"Claude SDK receive error: {exc}",
+                        },
+                    )
+
+                content = streamed_text.strip() if streamed_any else "".join(output_parts).strip()
+                should_follow = auto_continue and _attempt == 0 and _should_auto_continue(content)
+                if should_follow:
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "auto_continue",
+                            "timestamp": time.time(),
+                            "backend": "claude-sdk",
+                            "content": _truncate_log_value(content, config.trace_log_max_chars),
+                        },
+                    )
+                    followup_prompt = "Proceed. Start implementing now without further questions."
+                    continue
+
+                if content:
+                    if streamed_any:
+                        print()
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "assistant_output",
+                            "timestamp": time.time(),
+                            "backend": "claude-sdk",
+                            "content": _truncate_log_value(content, config.trace_log_max_chars),
+                        },
+                    )
+                    if not streamed_any:
+                        print(content)
+                break
+
+
+async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
+    if config.backend == "claude-sdk":
+        await _run_claude_sdk_loop(context, config)
+        return
+    await _run_openai_loop(context, config)

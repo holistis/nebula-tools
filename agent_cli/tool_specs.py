@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from .prompt_loader import load_tool_prompts
+from .prompt_loader import load_tool_prompts, load_subagent_prompts
 
 
 TOOL_PROMPTS = load_tool_prompts()
 TOOL_PROMPT_ALIASES = {
     "Task": "Task (agent)",
 }
+SUBAGENT_TYPES = sorted(load_subagent_prompts().keys())
 
 
 def _desc(name: str, fallback: str) -> str:
@@ -111,8 +112,16 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         {
             "description": _prop("string", "Short (3-5 words) summary of the agent task."),
             "prompt": _prop("string", "Detailed instructions for the subagent."),
-            "subagent_type": _prop("string", "Agent type to launch (e.g., Explore, Plan)."),
-            "model": _prop("string", "Optional model override for the subagent."),
+            "subagent_type": _prop(
+                "string",
+                "Agent type to launch (e.g., Explore, Plan).",
+                **({"enum": SUBAGENT_TYPES} if SUBAGENT_TYPES else {}),
+            ),
+            "model": _prop(
+                "string",
+                "Optional model override for the subagent (haiku/sonnet/opus).",
+                enum=["haiku", "sonnet", "opus"],
+            ),
             "resume": _prop("string", "Resume a previous agent id."),
             "run_in_background": _prop("boolean", "Run asynchronously.", default=False),
         },
