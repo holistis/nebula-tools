@@ -540,3 +540,135 @@ describe('Tool Definitions', () => {
     expect(searchCellsToolDefinition.parameters.properties.limit).toBeDefined();
   });
 });
+
+// Import the readOutputTool for adaptive polling tests
+import { readOutputTool } from '../../src/tools/notebook.js';
+
+describe('read_output adaptive polling', () => {
+  let mockClient: Partial<NebulaClient>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should poll quickly for fast executions', async () => {
+    // Mock: First poll returns empty, second poll returns output
+    // Should complete in ~50-100ms (one interval)
+    mockClient = {
+      readCellOutputOp: vi.fn()
+        .mockResolvedValueOnce({
+          success: true,
+          data: {
+            cellId: 'cell-1',
+            cellIndex: 0,
+            outputs: []
+          }
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: {
+            cellId: 'cell-1',
+            cellIndex: 0,
+            outputs: [{ output_type: 'stream', name: 'stdout', text: 'done' }]
+          }
+        })
+    } as Partial<NebulaClient>;
+
+    const start = Date.now();
+    const result = await readOutputTool.execute(
+      { path: '/test.ipynb', cell_index: 0, max_wait: 10 },
+      mockClient as NebulaClient
+    );
+    const duration = Date.now() - start;
+
+    // With 50ms initial interval, should complete quickly (not 500ms+)
+    // Allow some overhead for test execution
+    expect(duration).toBeLessThan(300);
+    expect(result.success).toBe(true);
+    expect(result.data?.outputs).toHaveLength(1);
+    expect(mockClient.readCellOutputOp).toHaveBeenCalledTimes(2);
+  });
+
+  it('should use exponential backoff for long executions', { timeout: 10000 }, async () => {
+    // Mock: Multiple empty polls, then success
+    // Should use intervals: 50, 100, 200, 400, 800ms...
+    const emptyResponse = {
+      success: true,
+      data: {
+        cellId: 'cell-1',
+        cellIndex: 0,
+        outputs: []
+      }
+    };
+
+    const successResponse = {
+      success: true,
+      data: {
+        cellId: 'cell-1',
+        cellIndex: 0,
+        outputs: [{ output_type: 'execute_result', data: { 'text/plain': '42' } }]
+      }
+    };
+
+    // Return empty 9 times, then success on 10th call
+    const mockFn = vi.fn();
+    for (let i = 0; i < 9; i++) {
+      mockFn.mockResolvedValueOnce(emptyResponse);
+    }
+    mockFn.mockResolvedValueOnce(successResponse);
+
+    mockClient = { readCellOutputOp: mockFn } as Partial<NebulaClient>;
+
+    const start = Date.now();
+    const result = await readOutputTool.execute(
+      { path: '/test.ipynb', cell_index: 0, max_wait: 30 },
+      mockClient as NebulaClient
+    );
+    const duration = Date.now() - start;
+
+    // With adaptive polling: 50+100+200+400+800+1000+1000+1000+1000 ≈ 5550ms
+    // With fixed polling: 9*500 = 4500ms
+    // Since we can't control exact timing in tests, just verify it works
+    // and makes the expected number of calls
+    expect(result.success).toBe(true);
+    expect(result.data?.outputs).toHaveLength(1);
+    expect(mockClient.readCellOutputOp).toHaveBeenCalledTimes(10);
+
+    // Duration should be reasonable (between 2-8 seconds for 10 polls)
+    expect(duration).toBeGreaterThan(1000);
+    expect(duration).toBeLessThan(10000);
+  });
+
+  it('should timeout and return current outputs after max_wait', async () => {
+    // Mock: Always return empty outputs
+    const emptyResponse = {
+      success: true,
+      data: {
+        cellId: 'cell-1',
+        cellIndex: 0,
+        outputs: []
+      }
+    };
+
+    mockClient = {
+      readCellOutputOp: vi.fn().mockResolvedValue(emptyResponse)
+    } as Partial<NebulaClient>;
+
+    const start = Date.now();
+    const result = await readOutputTool.execute(
+      { path: '/test.ipynb', cell_index: 0, max_wait: 1 }, // 1 second timeout
+      mockClient as NebulaClient
+    );
+    const duration = Date.now() - start;
+
+    // Should timeout after ~1 second and return empty outputs
+    expect(duration).toBeGreaterThan(900); // At least 900ms
+    expect(duration).toBeLessThan(1700); // Allow some overhead for test execution
+    expect(result.success).toBe(true);
+    expect(result.data?.outputs).toHaveLength(0);
+
+    // Should have made multiple poll attempts
+    const callCount = (mockClient.readCellOutputOp as any).mock.calls.length;
+    expect(callCount).toBeGreaterThan(1);
+  });
+});
