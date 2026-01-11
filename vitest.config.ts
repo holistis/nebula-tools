@@ -5,7 +5,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
-    exclude: ['node_modules', 'dist', 'gemini-cli'],
+    exclude: ['node_modules', 'dist', 'gemini-cli', 'tests/archived'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],

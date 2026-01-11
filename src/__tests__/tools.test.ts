@@ -33,6 +33,9 @@ import {
   duplicateCellTool,
   searchCellsTool,
   updateMetadataTool,
+  connectServerTool,
+  startAgentSessionTool,
+  endAgentSessionTool,
   listKernelsTool,
   kernelStartTool,
   kernelStopTool,
@@ -55,9 +58,9 @@ describe('Tool Collections', () => {
       expect(allTools.length).toBe(expectedCount);
     });
 
-    it('should contain 17 total tools', () => {
-      // 11 notebook + 5 kernel + 1 execution = 17
-      expect(allTools.length).toBe(17);
+    it('should contain 20 total tools', () => {
+      // 14 notebook + 5 kernel + 1 execution = 20
+      expect(allTools.length).toBe(20);
     });
 
     it('should have unique tool names', () => {
@@ -101,8 +104,8 @@ describe('Tool Collections', () => {
   });
 
   describe('Individual Tool Arrays', () => {
-    it('notebookTools should have 11 tools', () => {
-      expect(notebookTools.length).toBe(11);
+    it('notebookTools should have 14 tools', () => {
+      expect(notebookTools.length).toBe(14);
     });
 
     it('kernelTools should have 5 tools', () => {
@@ -165,6 +168,7 @@ describe('Tool Definitions', () => {
       'move_cell',
       'duplicate_cell',
       'update_metadata',
+      'start_agent_session',
       'kernel_stop',
       'kernel_restart',
       'execute_cell',
@@ -247,6 +251,48 @@ describe('Tool Definitions', () => {
       expect(def.name).toBe('search_cells');
       expect(def.inputSchema.required).toContain('path');
       expect(def.inputSchema.required).toContain('query');
+    });
+
+    it('read_output should have correct schema', () => {
+      const def = readOutputTool.definition;
+      expect(def.name).toBe('read_output');
+      expect(def.inputSchema.properties.path).toBeDefined();
+      expect(def.inputSchema.properties.cell_index).toBeDefined();
+      expect(def.inputSchema.properties.cell_id).toBeDefined();
+      expect(def.inputSchema.properties.output_offset).toBeDefined();
+      expect(def.inputSchema.properties.max_wait).toBeDefined();
+      expect(def.inputSchema.required).toContain('path');
+    });
+
+    it('update_metadata should have correct schema', () => {
+      const def = updateMetadataTool.definition;
+      expect(def.name).toBe('update_metadata');
+      expect(def.inputSchema.properties.path).toBeDefined();
+      expect(def.inputSchema.properties.cell_id).toBeDefined();
+      expect(def.inputSchema.properties.changes).toBeDefined();
+      expect(def.inputSchema.required).toContain('path');
+      expect(def.inputSchema.required).toContain('cell_id');
+      expect(def.inputSchema.required).toContain('changes');
+    });
+
+    it('connect_server should have correct schema', () => {
+      const def = connectServerTool.definition;
+      expect(def.name).toBe('connect_server');
+      expect(def.inputSchema.properties.base_url).toBeDefined();
+    });
+
+    it('start_agent_session should have correct schema', () => {
+      const def = startAgentSessionTool.definition;
+      expect(def.name).toBe('start_agent_session');
+      expect(def.inputSchema.properties.path).toBeDefined();
+      expect(def.inputSchema.required).toContain('path');
+    });
+
+    it('end_agent_session should have correct schema', () => {
+      const def = endAgentSessionTool.definition;
+      expect(def.name).toBe('end_agent_session');
+      expect(def.inputSchema.properties.path).toBeDefined();
+      expect(def.inputSchema.required).toContain('path');
     });
   });
 
@@ -355,6 +401,11 @@ describe('Tool Utility Functions', () => {
       expect(byCategory.notebook).toContain('insert_cell');
       expect(byCategory.notebook).toContain('update_cell');
       expect(byCategory.notebook).toContain('clear_notebook');
+      expect(byCategory.notebook).toContain('read_output');
+      expect(byCategory.notebook).toContain('update_metadata');
+      expect(byCategory.notebook).toContain('connect_server');
+      expect(byCategory.notebook).toContain('start_agent_session');
+      expect(byCategory.notebook).toContain('end_agent_session');
 
       expect(byCategory.kernel).toContain('list_kernels');
       expect(byCategory.kernel).toContain('kernel_start');
@@ -365,7 +416,7 @@ describe('Tool Utility Functions', () => {
     it('should have correct counts per category', () => {
       const byCategory = getToolNamesByCategory();
 
-      expect(byCategory.notebook.length).toBe(11);
+      expect(byCategory.notebook.length).toBe(14);
       expect(byCategory.kernel.length).toBe(5);
       expect(byCategory.execution.length).toBe(1);
     });

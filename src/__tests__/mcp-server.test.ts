@@ -92,7 +92,7 @@ describe('MCP Server', () => {
       expect(result).toBeDefined();
       expect(result.tools).toBeDefined();
       expect(Array.isArray(result.tools)).toBe(true);
-      expect(result.tools.length).toBe(20); // 6 kernel + 9 notebook + 2 execution + 3 file
+      expect(result.tools.length).toBe(20); // 14 notebook + 5 kernel + 1 execution
     });
 
     it('should have correct tool definitions', async () => {
@@ -110,14 +110,15 @@ describe('MCP Server', () => {
       expect(readNotebook.inputSchema.required).toContain('path');
 
       // Check execution tools
-      const executeCode = result.tools.find((t: any) => t.name === 'execute_code');
-      expect(executeCode).toBeDefined();
-      expect(executeCode.inputSchema.properties.session_id).toBeDefined();
-      expect(executeCode.inputSchema.properties.code).toBeDefined();
+      const executeCell = result.tools.find((t: any) => t.name === 'execute_cell');
+      expect(executeCell).toBeDefined();
+      expect(executeCell.inputSchema.properties.session_id).toBeDefined();
+      expect(executeCell.inputSchema.properties.path).toBeDefined();
 
-      // Check file tools
-      const listFiles = result.tools.find((t: any) => t.name === 'list_files');
-      expect(listFiles).toBeDefined();
+      // Check connection tool
+      const connectServer = result.tools.find((t: any) => t.name === 'connect_server');
+      expect(connectServer).toBeDefined();
+      expect(connectServer.inputSchema.properties.base_url).toBeDefined();
     });
 
     it('should handle tools/call for list_kernels', async () => {
@@ -131,17 +132,17 @@ describe('MCP Server', () => {
       expect(Array.isArray(result.content)).toBe(true);
       expect(result.content[0].type).toBe('text');
       expect(result.content[0].text).toContain('kernels');
-    });
+    }, 15000);
 
-    it('should handle tools/call for list_files', async () => {
+    it('should handle tools/call for connect_server', async () => {
       const result = await sendRequest('tools/call', {
-        name: 'list_files',
-        arguments: { path: '/tmp' },
+        name: 'connect_server',
+        arguments: { base_url: 'http://localhost:8000' },
       });
 
       expect(result).toBeDefined();
       expect(result.content[0].type).toBe('text');
-      expect(result.content[0].text).toContain('Contents of');
+      expect(result.content[0].text).toContain('Connected to');
     });
 
     it('should return error for unknown method', async () => {

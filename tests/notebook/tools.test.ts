@@ -18,14 +18,17 @@ import { NebulaClient } from '../../src/notebook/client.js';
 // Create a mock client
 function createMockClient(): NebulaClient {
   return {
-    readNotebook: vi.fn(),
-    writeNotebook: vi.fn(),
+    readNotebookViaRouter: vi.fn(),
+    readCellOp: vi.fn(),
+    readCellOutputOp: vi.fn(),
+    insertCellOp: vi.fn(),
+    updateContentOp: vi.fn(),
+    updateMetadataOp: vi.fn(),
     executeCode: vi.fn(),
     listKernels: vi.fn(),
     startKernel: vi.fn(),
     interruptKernel: vi.fn(),
     shutdownKernel: vi.fn(),
-    listFiles: vi.fn(),
     generateCode: vi.fn(),
     chat: vi.fn(),
   } as unknown as NebulaClient;
@@ -39,7 +42,7 @@ describe('readNotebookCells', () => {
   });
 
   it('should read all cells from notebook', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -62,7 +65,7 @@ describe('readNotebookCells', () => {
   });
 
   it('should read specific cell indices', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -86,7 +89,7 @@ describe('readNotebookCells', () => {
   });
 
   it('should filter out invalid cell indices', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -106,7 +109,7 @@ describe('readNotebookCells', () => {
   });
 
   it('should exclude outputs by default', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -126,7 +129,7 @@ describe('readNotebookCells', () => {
   });
 
   it('should include outputs when requested', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -146,7 +149,7 @@ describe('readNotebookCells', () => {
   });
 
   it('should handle read errors', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: false,
       error: 'File not found',
     });
@@ -169,7 +172,15 @@ describe('writeNotebookCell', () => {
   });
 
   it('should update existing cell', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readCellOp as any).mockResolvedValueOnce({
+      success: true,
+      data: {
+        cellIndex: 0,
+        cell: { id: 'cell-1', type: 'code', content: 'old content', outputs: [] },
+      },
+    });
+    (mockClient.updateContentOp as any).mockResolvedValueOnce({ success: true });
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -178,7 +189,6 @@ describe('writeNotebookCell', () => {
         ],
       },
     });
-    (mockClient.writeNotebook as any).mockResolvedValueOnce({ success: true });
 
     const result = await writeNotebookCell(
       { notebookPath: '/test.ipynb', cellIndex: 0, content: 'new content' },
@@ -188,23 +198,29 @@ describe('writeNotebookCell', () => {
     expect(result.success).toBe(true);
     expect(result.data?.cellIndex).toBe(0);
     expect(result.data?.totalCells).toBe(1);
-
-    // Verify the notebook was written with updated content
-    const writeCall = (mockClient.writeNotebook as any).mock.calls[0][0];
-    expect(writeCall.cells[0].content).toBe('new content');
+    expect(mockClient.updateContentOp).toHaveBeenCalledWith(
+      '/test.ipynb',
+      'cell-1',
+      'new content'
+    );
+    expect(mockClient.updateMetadataOp).not.toHaveBeenCalled();
   });
 
   it('should append new cell with index -1', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.insertCellOp as any).mockResolvedValueOnce({
+      success: true,
+      data: { cellIndex: 1, cellId: 'cell-2' },
+    });
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
         cells: [
           { id: 'cell-1', type: 'code', content: 'existing', outputs: [] },
+          { id: 'cell-2', type: 'code', content: 'new cell', outputs: [] },
         ],
       },
     });
-    (mockClient.writeNotebook as any).mockResolvedValueOnce({ success: true });
 
     const result = await writeNotebookCell(
       { notebookPath: '/test.ipynb', cellIndex: -1, content: 'new cell' },
@@ -214,23 +230,28 @@ describe('writeNotebookCell', () => {
     expect(result.success).toBe(true);
     expect(result.data?.cellIndex).toBe(1); // New cell at index 1
     expect(result.data?.totalCells).toBe(2);
-
-    const writeCall = (mockClient.writeNotebook as any).mock.calls[0][0];
-    expect(writeCall.cells).toHaveLength(2);
-    expect(writeCall.cells[1].content).toBe('new cell');
+    expect(mockClient.insertCellOp).toHaveBeenCalledTimes(1);
   });
 
   it('should set cell type', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readCellOp as any).mockResolvedValueOnce({
+      success: true,
+      data: {
+        cellIndex: 0,
+        cell: { id: 'cell-1', type: 'code', content: 'old', outputs: [] },
+      },
+    });
+    (mockClient.updateContentOp as any).mockResolvedValueOnce({ success: true });
+    (mockClient.updateMetadataOp as any).mockResolvedValueOnce({ success: true });
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
         cells: [
-          { id: 'cell-1', type: 'code', content: 'old', outputs: [] },
+          { id: 'cell-1', type: 'markdown', content: '# Header', outputs: [] },
         ],
       },
     });
-    (mockClient.writeNotebook as any).mockResolvedValueOnce({ success: true });
 
     const result = await writeNotebookCell(
       { notebookPath: '/test.ipynb', cellIndex: 0, content: '# Header', cellType: 'markdown' },
@@ -238,17 +259,13 @@ describe('writeNotebookCell', () => {
     );
 
     expect(result.success).toBe(true);
-    const writeCall = (mockClient.writeNotebook as any).mock.calls[0][0];
-    expect(writeCall.cells[0].type).toBe('markdown');
+    expect(mockClient.updateMetadataOp).toHaveBeenCalledWith('/test.ipynb', 'cell-1', { type: 'markdown' });
   });
 
   it('should reject invalid cell index', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
-      success: true,
-      data: {
-        path: '/test.ipynb',
-        cells: [{ id: 'cell-1', type: 'code', content: 'x', outputs: [] }],
-      },
+    (mockClient.readCellOp as any).mockResolvedValueOnce({
+      success: false,
+      error: 'Cell index 5 out of range',
     });
 
     const result = await writeNotebookCell(
@@ -257,15 +274,18 @@ describe('writeNotebookCell', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Invalid cell index');
+    expect(result.error).toContain('out of range');
   });
 
   it('should handle write errors', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readCellOp as any).mockResolvedValueOnce({
       success: true,
-      data: { path: '/test.ipynb', cells: [{ id: 'cell-1', type: 'code', content: 'x', outputs: [] }] },
+      data: {
+        cellIndex: 0,
+        cell: { id: 'cell-1', type: 'code', content: 'x', outputs: [] },
+      },
     });
-    (mockClient.writeNotebook as any).mockResolvedValueOnce({
+    (mockClient.updateContentOp as any).mockResolvedValueOnce({
       success: false,
       error: 'Permission denied',
     });
@@ -352,7 +372,7 @@ describe('searchNotebookCells', () => {
   });
 
   it('should search cells by keyword', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -376,7 +396,7 @@ describe('searchNotebookCells', () => {
   });
 
   it('should rank cells by relevance', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -400,7 +420,7 @@ describe('searchNotebookCells', () => {
   });
 
   it('should respect limit parameter', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -424,7 +444,7 @@ describe('searchNotebookCells', () => {
   });
 
   it('should include cell indices', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -445,7 +465,7 @@ describe('searchNotebookCells', () => {
   });
 
   it('should search in outputs when included', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -470,7 +490,7 @@ describe('searchNotebookCells', () => {
   });
 
   it('should return empty for no matches', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
@@ -490,7 +510,7 @@ describe('searchNotebookCells', () => {
   });
 
   it('should boost exact phrase matches', async () => {
-    (mockClient.readNotebook as any).mockResolvedValueOnce({
+    (mockClient.readNotebookViaRouter as any).mockResolvedValueOnce({
       success: true,
       data: {
         path: '/test.ipynb',
