@@ -9,16 +9,129 @@ import type { NebulaClient } from '../notebook/client.js';
 import type { CellOutput } from '../types.js';
 
 // =============================================================================
+// Truncation Defaults
+// =============================================================================
+
+const DEFAULT_MAX_LINES = 100;
+const DEFAULT_MAX_CHARS = 10000;
+
+// =============================================================================
 // Shared Utilities
 // =============================================================================
 
-function formatOutputs(outputs: CellOutput[]): MCPContent {
+interface TruncationMetadata {
+  truncated: boolean;
+  truncation_reason: 'lines' | 'chars' | null;
+  total_lines: number;
+  total_chars: number;
+  returned_range: {
+    start_line: number;
+    end_line: number;
+    char_count: number;
+  };
+}
+
+function truncateOutput(
+  content: string,
+  maxLines: number,
+  maxChars: number
+): { content: string; metadata: TruncationMetadata } {
+  const lines = content.split('\n');
+  const totalLines = lines.length;
+  const totalChars = content.length;
+
+  let truncated = false;
+  let truncationReason: 'lines' | 'chars' | null = null;
+  let resultLines = lines;
+  let endLine = totalLines;
+
+  // Truncate by lines first
+  if (totalLines > maxLines) {
+    resultLines = lines.slice(0, maxLines);
+    endLine = maxLines;
+    truncated = true;
+    truncationReason = 'lines';
+  }
+
+  let result = resultLines.join('\n');
+
+  // Then check chars (but always include at least one line)
+  if (result.length > maxChars && resultLines.length > 1) {
+    // Find how many complete lines fit within maxChars
+    let charCount = 0;
+    let lineCount = 0;
+    for (const line of resultLines) {
+      if (charCount + line.length + 1 > maxChars && lineCount > 0) break;
+      charCount += line.length + 1;
+      lineCount++;
+    }
+    resultLines = resultLines.slice(0, Math.max(1, lineCount));
+    result = resultLines.join('\n');
+    endLine = resultLines.length;
+    truncated = true;
+    truncationReason = 'chars';
+  }
+
+  return {
+    content: result,
+    metadata: {
+      truncated,
+      truncation_reason: truncationReason,
+      total_lines: totalLines,
+      total_chars: totalChars,
+      returned_range: {
+        start_line: 0,
+        end_line: endLine,
+        char_count: result.length,
+      },
+    },
+  };
+}
+
+interface TruncatedOutput extends CellOutput {
+  truncated?: boolean;
+  truncation_reason?: 'lines' | 'chars' | null;
+  total_lines?: number;
+  total_chars?: number;
+}
+
+function truncateOutputs(
+  outputs: CellOutput[],
+  maxLines: number,
+  maxChars: number
+): TruncatedOutput[] {
+  return outputs.map(output => {
+    // Don't truncate images
+    if (output.type === 'image') {
+      return { ...output };
+    }
+
+    const { content, metadata } = truncateOutput(output.content, maxLines, maxChars);
+    return {
+      ...output,
+      content,
+      truncated: metadata.truncated,
+      truncation_reason: metadata.truncation_reason,
+      total_lines: metadata.total_lines,
+      total_chars: metadata.total_chars,
+    };
+  });
+}
+
+function formatOutputs(outputs: TruncatedOutput[]): MCPContent {
   return outputs.map(o => {
     if (o.type === 'image') {
       return { type: 'image' as const, data: o.content, mimeType: 'image/png' };
     }
     const prefix = o.type === 'error' ? '[ERROR] ' : '';
-    return { type: 'text' as const, text: prefix + o.content };
+    let text = prefix + o.content;
+
+    // Add truncation info if applicable
+    if (o.truncated) {
+      text += `\n--- [TRUNCATED: ${o.truncation_reason}] ${o.total_lines} total lines, ${o.total_chars} total chars ---`;
+    }
+
+    return { type: 'text' as const, text };
   });
 }
 
@@ -33,11 +146,14 @@ export interface ExecuteCellParams {
   session_id?: string;
   max_wait?: number;
   save_outputs?: boolean;
+  // Truncation parameters
+  max_lines?: number;
+  max_chars?: number;
 }
 
 export interface ExecuteCellResult {
   cellId: string;
-  outputs: CellOutput[];
+  outputs: TruncatedOutput[];
   elapsed: number;
   saved: boolean;
 }
@@ -45,7 +161,7 @@ export interface ExecuteCellResult {
 export const executeCellTool: Tool<ExecuteCellParams, ExecuteCellResult> = {
   definition: {
     name: 'execute_cell',
-    description: 'Execute a notebook cell and return its output. Outputs are saved incrementally during execution. Requires an active kernel session.',
+    description: 'Execute a notebook cell and return its output. Outputs are truncated by default (100 lines, 10000 chars). Outputs are saved incrementally during execution. Requires an active kernel session.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -55,6 +171,8 @@ export const executeCellTool: Tool<ExecuteCellParams, ExecuteCellResult> = {
         session_id: { type: 'string', description: 'Kernel session ID. If not provided, will try to get/create one.' },
         max_wait: { type: 'number', description: 'Max seconds to wait for completion (default: 60)' },
         save_outputs: { type: 'boolean', description: 'Save outputs back to the notebook (default: true)' },
+        max_lines: { type: 'number', description: 'Max lines per output (default: 100)' },
+        max_chars: { type: 'number', description: 'Max chars per output (default: 10000)' },
       },
       required: ['path'],
     },
@@ -83,6 +201,8 @@ export const executeCellTool: Tool<ExecuteCellParams, ExecuteCellResult> = {
 
     const maxWait = params.max_wait ?? 60;
     const saveOutputs = params.save_outputs ?? true;
+    const maxLines = params.max_lines ?? DEFAULT_MAX_LINES;
+    const maxChars = params.max_chars ?? DEFAULT_MAX_CHARS;
     const startTime = Date.now();
 
     const result = await client.executeCell(params.path, sessionId, {
@@ -98,11 +218,14 @@ export const executeCellTool: Tool<ExecuteCellParams, ExecuteCellResult> = {
       return { success: false, error: `Execution failed after ${elapsed.toFixed(1)}s: ${result.error}` };
     }
 
+    // Apply truncation to outputs
+    const outputs = truncateOutputs(result.data?.outputs ?? [], maxLines, maxChars);
+
     return {
       success: true,
       data: {
         cellId: result.data?.cellId || params.cell_id || `${params.cell_index}`,
-        outputs: result.data?.outputs ?? [],
+        outputs,
         elapsed,
         saved: saveOutputs,
       },
