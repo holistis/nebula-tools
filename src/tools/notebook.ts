@@ -39,6 +39,9 @@ export interface ReadNotebookParams {
   path: string;
   include_outputs?: boolean;
   format?: 'brief' | 'detailed';
+  // Truncation parameters for outputs (when include_outputs=true)
+  max_lines?: number;
+  max_chars?: number;
 }
 
 export interface ReadNotebookResult {
@@ -50,13 +53,15 @@ export interface ReadNotebookResult {
 export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   definition: {
     name: 'read_notebook',
-    description: 'Read all cells from a notebook. Use format="brief" for overview, "detailed" for full content.',
+    description: 'Read all cells from a notebook. Use format="brief" for overview, "detailed" for full content. Outputs are included and truncated by default (100 lines, 10000 chars per output). Use include_outputs=false to exclude outputs entirely.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the notebook file (.ipynb)' },
-        include_outputs: { type: 'boolean', description: 'Include cell outputs (default: false)' },
+        include_outputs: { type: 'boolean', description: 'Include cell outputs (default: true). Outputs are automatically truncated.' },
         format: { type: 'string', enum: ['brief', 'detailed'], description: 'Output format (default: brief)' },
+        max_lines: { type: 'number', description: 'Max lines per output (default: 100)' },
+        max_chars: { type: 'number', description: 'Max chars per output (default: 10000)' },
       },
       required: ['path'],
     },
@@ -64,7 +69,11 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   },
 
   async execute(params, client) {
-    const result = await client.readNotebookViaRouter(params.path);
+    const result = await client.readNotebookViaRouter(params.path, {
+      includeOutputs: params.include_outputs ?? true,  // Default to true
+      maxLines: params.max_lines,
+      maxChars: params.max_chars,
+    });
     if (!result.success) {
       return { success: false, error: result.error };
     }
@@ -74,7 +83,7 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
       success: true,
       data: {
         path: params.path,
-        cells: params.include_outputs ? notebook.cells : notebook.cells.map(c => ({ ...c, outputs: undefined })),
+        cells: notebook.cells,
         totalCells: notebook.cells.length,
       },
     };
@@ -159,19 +168,40 @@ export interface ReadOutputParams {
   cell_id?: string;
   output_offset?: number;
   max_wait?: number;
+  // Truncation parameters
+  max_lines?: number;
+  max_chars?: number;
+  line_offset?: number;
+  save_to_file?: boolean;
+}
+
+export interface TruncatedOutput extends CellOutput {
+  truncated?: boolean;
+  truncation_reason?: string | null;
+  total_lines?: number;
+  total_chars?: number;
+  returned_range?: {
+    start_line: number;
+    end_line: number;
+    char_count: number;
+  };
+  temp_file?: string;
+  temp_file_size?: number;
+  is_binary?: boolean;
 }
 
 export interface ReadOutputResult {
   cellId: string;
   cellIndex: number;
-  outputs: CellOutput[];
+  outputs: TruncatedOutput[];
   totalOutputs: number;
+  temp_files?: string[];
 }
 
 export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
   definition: {
     name: 'read_output',
-    description: 'Read cell outputs. Use output_offset to skip already-seen outputs. Use max_wait to poll for new outputs.',
+    description: 'Read cell outputs with smart truncation. Large outputs are automatically truncated (100 lines, 10000 chars) and can be paginated with line_offset. Use save_to_file=true to save complete output to a temp file for analysis.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -180,6 +210,10 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
         cell_id: { type: 'string', description: 'Stable cell ID. Use this OR cell_index.' },
         output_offset: { type: 'number', description: 'Skip first N outputs (default: 0)' },
         max_wait: { type: 'number', description: 'Wait up to N seconds for new outputs (default: 0)' },
+        max_lines: { type: 'number', description: 'Maximum lines to return per output (default: 100)' },
+        max_chars: { type: 'number', description: 'Maximum characters to return per output (default: 10000)' },
+        line_offset: { type: 'number', description: 'Skip first N lines for pagination (default: 0). Use with truncation metadata to paginate through large outputs.' },
+        save_to_file: { type: 'boolean', description: 'Save full output to temp file for analysis (default: false).' },
       },
       required: ['path'],
     },
@@ -193,11 +227,20 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
 
     const maxWait = params.max_wait ?? 0;
 
+    // Build truncation options
+    const truncationOpts = {
+      maxLines: params.max_lines,
+      maxChars: params.max_chars,
+      lineOffset: params.line_offset,
+      saveToFile: params.save_to_file,
+    };
+
     // For immediate reads, use efficient operation router
     if (maxWait <= 0) {
       const result = await client.readCellOutputOp(params.path, {
         cellIndex: params.cell_index,
         cellId: params.cell_id,
+        ...truncationOpts,
       });
 
       if (!result.success) {
@@ -213,6 +256,7 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
           cellIndex: result.data!.cellIndex,
           outputs: offset > 0 ? allOutputs.slice(offset) : allOutputs,
           totalOutputs: allOutputs.length,
+          temp_files: result.data!.temp_files,
         },
       };
     }
@@ -226,6 +270,7 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
       const result = await client.readCellOutputOp(params.path, {
         cellIndex: params.cell_index,
         cellId: params.cell_id,
+        ...truncationOpts,
       });
 
       if (!result.success) {
@@ -245,6 +290,7 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
             cellIndex: result.data!.cellIndex,
             outputs: newOutputs,
             totalOutputs: allOutputs.length,
+            temp_files: result.data!.temp_files,
           },
         };
       }
@@ -258,6 +304,7 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
     const finalResult = await client.readCellOutputOp(params.path, {
       cellIndex: params.cell_index,
       cellId: params.cell_id,
+      ...truncationOpts,
     });
 
     if (!finalResult.success) {
@@ -273,6 +320,7 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
         cellIndex: finalResult.data!.cellIndex,
         outputs: offset > 0 ? allOutputs.slice(offset) : allOutputs,
         totalOutputs: allOutputs.length,
+        temp_files: finalResult.data!.temp_files,
       },
     };
   },
@@ -281,14 +329,48 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
-    const { cellId, outputs, totalOutputs } = result.data!;
+    const { cellId, outputs, totalOutputs, temp_files } = result.data!;
     if (outputs.length === 0) {
       return [{ type: 'text', text: `Cell ${cellId}: No outputs (total: ${totalOutputs})` }];
     }
-    return [
-      { type: 'text', text: `Cell ${cellId}: ${outputs.length} outputs (total: ${totalOutputs})\n` },
-      ...formatOutputs(outputs),
-    ];
+
+    const mcpOutputs: MCPContent = [];
+    let headerInfo = `Cell ${cellId}: ${outputs.length} outputs (total: ${totalOutputs})`;
+
+    // Add temp file info if present
+    if (temp_files && temp_files.length > 0) {
+      headerInfo += `\n📁 Large output saved to: ${temp_files.join(', ')}`;
+    }
+
+    mcpOutputs.push({ type: 'text', text: headerInfo + '\n' });
+
+    // Format each output with truncation metadata
+    for (const output of outputs) {
+      if (output.type === 'image') {
+        mcpOutputs.push({ type: 'image' as const, data: output.content, mimeType: 'image/png' });
+        continue;
+      }
+
+      let text = output.type === 'error' ? '[ERROR] ' + output.content : output.content;
+
+      // Add truncation info if applicable
+      if (output.truncated) {
+        const range = output.returned_range;
+        const info = [
+          `\n--- [TRUNCATED: ${output.truncation_reason}]`,
+          `Lines ${range?.start_line ?? 0}-${range?.end_line ?? '?'} of ${output.total_lines ?? '?'}`,
+          `(${range?.char_count ?? '?'} of ${output.total_chars ?? '?'} chars)`,
+        ];
+        if (output.temp_file) {
+          info.push(`Full output saved to: ${output.temp_file}`);
+        }
+        text += info.join(' | ') + ' ---';
+      }
+
+      mcpOutputs.push({ type: 'text', text });
+    }
+
+    return mcpOutputs;
   },
 };
 

@@ -9,6 +9,8 @@ export interface ReadNotebookParams {
     path: string;
     include_outputs?: boolean;
     format?: 'brief' | 'detailed';
+    max_lines?: number;
+    max_chars?: number;
 }
 export interface ReadNotebookResult {
     path: string;
@@ -32,12 +34,31 @@ export interface ReadOutputParams {
     cell_id?: string;
     output_offset?: number;
     max_wait?: number;
+    max_lines?: number;
+    max_chars?: number;
+    line_offset?: number;
+    save_to_file?: boolean;
+}
+export interface TruncatedOutput extends CellOutput {
+    truncated?: boolean;
+    truncation_reason?: string | null;
+    total_lines?: number;
+    total_chars?: number;
+    returned_range?: {
+        start_line: number;
+        end_line: number;
+        char_count: number;
+    };
+    temp_file?: string;
+    temp_file_size?: number;
+    is_binary?: boolean;
 }
 export interface ReadOutputResult {
     cellId: string;
     cellIndex: number;
-    outputs: CellOutput[];
+    outputs: TruncatedOutput[];
     totalOutputs: number;
+    temp_files?: string[];
 }
 export declare const readOutputTool: Tool<ReadOutputParams, ReadOutputResult>;
 export interface InsertCellParams {

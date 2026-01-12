@@ -912,7 +912,14 @@ export class NebulaClient {
    * If UI is connected, requests current state from UI.
    * Otherwise reads from file.
    */
-  async readNotebookViaRouter(path: string): Promise<ToolResult<Notebook>> {
+  async readNotebookViaRouter(
+    path: string,
+    options: {
+      includeOutputs?: boolean;
+      maxLines?: number;
+      maxChars?: number;
+    } = {}
+  ): Promise<ToolResult<Notebook>> {
     interface RouterReadResult {
       success: boolean;
       data?: {
@@ -923,7 +930,19 @@ export class NebulaClient {
       error?: string;
     }
 
-    const result = await this.fetch<RouterReadResult>(`/api/notebook/read?path=${encodeURIComponent(path)}`);
+    // Build query string with options
+    const params = new URLSearchParams({ path });
+    if (options.includeOutputs !== undefined) {
+      params.set('include_outputs', String(options.includeOutputs));
+    }
+    if (options.maxLines !== undefined) {
+      params.set('max_lines', String(options.maxLines));
+    }
+    if (options.maxChars !== undefined) {
+      params.set('max_chars', String(options.maxChars));
+    }
+
+    const result = await this.fetch<RouterReadResult>(`/api/notebook/read?${params.toString()}`);
 
     if (!result.success) {
       return { success: false, error: result.error };
@@ -1231,16 +1250,49 @@ export class NebulaClient {
    *
    * More efficient than readNotebook when you only need outputs.
    * Routes to UI if connected, otherwise reads from file.
+   *
+   * Supports truncation options for large outputs:
+   * - maxLines: Maximum lines to return (default: 100)
+   * - maxChars: Maximum characters to return (default: 10000)
+   * - lineOffset: Skip first N lines for pagination
+   * - saveToFile: Force save full output to temp file
    */
   async readCellOutputOp(
     path: string,
-    options: { cellId?: string; cellIndex?: number }
-  ): Promise<ToolResult<{ outputs: CellOutput[]; executionCount?: number; cellId: string; cellIndex: number }>> {
+    options: {
+      cellId?: string;
+      cellIndex?: number;
+      maxLines?: number;
+      maxChars?: number;
+      lineOffset?: number;
+      saveToFile?: boolean;
+    }
+  ): Promise<ToolResult<{
+    outputs: Array<CellOutput & {
+      truncated?: boolean;
+      truncation_reason?: string | null;
+      total_lines?: number;
+      total_chars?: number;
+      returned_range?: { start_line: number; end_line: number; char_count: number };
+      temp_file?: string;
+      temp_file_size?: number;
+      is_binary?: boolean;
+    }>;
+    executionCount?: number;
+    cellId: string;
+    cellIndex: number;
+    temp_files?: string[];
+  }>> {
     const operation: import('../types.js').ReadCellOutputOp = {
       type: 'readCellOutput',
       notebookPath: path,
       cellId: options.cellId,
       cellIndex: options.cellIndex,
+      // Pass truncation options using snake_case for backend
+      max_lines: options.maxLines,
+      max_chars: options.maxChars,
+      line_offset: options.lineOffset,
+      save_to_file: options.saveToFile,
     };
 
     const result = await this.applyOperation(operation);
@@ -1260,6 +1312,7 @@ export class NebulaClient {
         executionCount: opResult.executionCount,
         cellId: opResult.cellId!,
         cellIndex: opResult.cellIndex!,
+        temp_files: opResult.temp_files,
       },
     };
   }

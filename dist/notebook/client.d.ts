@@ -259,7 +259,11 @@ export declare class NebulaClient {
      * If UI is connected, requests current state from UI.
      * Otherwise reads from file.
      */
-    readNotebookViaRouter(path: string): Promise<ToolResult<Notebook>>;
+    readNotebookViaRouter(path: string, options?: {
+        includeOutputs?: boolean;
+        maxLines?: number;
+        maxChars?: number;
+    }): Promise<ToolResult<Notebook>>;
     /**
      * Check if a UI is connected for a notebook path
      */
@@ -346,15 +350,39 @@ export declare class NebulaClient {
      *
      * More efficient than readNotebook when you only need outputs.
      * Routes to UI if connected, otherwise reads from file.
+     *
+     * Supports truncation options for large outputs:
+     * - maxLines: Maximum lines to return (default: 100)
+     * - maxChars: Maximum characters to return (default: 10000)
+     * - lineOffset: Skip first N lines for pagination
+     * - saveToFile: Force save full output to temp file
      */
     readCellOutputOp(path: string, options: {
         cellId?: string;
         cellIndex?: number;
+        maxLines?: number;
+        maxChars?: number;
+        lineOffset?: number;
+        saveToFile?: boolean;
     }): Promise<ToolResult<{
-        outputs: CellOutput[];
+        outputs: Array<CellOutput & {
+            truncated?: boolean;
+            truncation_reason?: string | null;
+            total_lines?: number;
+            total_chars?: number;
+            returned_range?: {
+                start_line: number;
+                end_line: number;
+                char_count: number;
+            };
+            temp_file?: string;
+            temp_file_size?: number;
+            is_binary?: boolean;
+        }>;
         executionCount?: number;
         cellId: string;
         cellIndex: number;
+        temp_files?: string[];
     }>>;
     /**
      * Clear all cells from a notebook using the operation router

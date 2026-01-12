@@ -216,6 +216,11 @@ export interface ReadCellOutputOp {
   notebookPath: string;
   cellId?: string;
   cellIndex?: number;
+  // Truncation parameters
+  max_lines?: number;
+  max_chars?: number;
+  line_offset?: number;
+  save_to_file?: boolean;
 }
 
 /**
@@ -282,10 +287,21 @@ export interface OperationResult {
   mtime?: number;
   /** Cell data (for readCell operation) */
   cell?: NotebookCell;
-  /** Cell outputs (for readCellOutput operation) */
-  outputs?: CellOutput[];
+  /** Cell outputs (for readCellOutput operation) - may include truncation metadata */
+  outputs?: Array<CellOutput & {
+    truncated?: boolean;
+    truncation_reason?: string | null;
+    total_lines?: number;
+    total_chars?: number;
+    returned_range?: { start_line: number; end_line: number; char_count: number };
+    temp_file?: string;
+    temp_file_size?: number;
+    is_binary?: boolean;
+  }>;
   /** Execution count (for readCellOutput operation) */
   executionCount?: number;
+  /** Temp files created for large outputs (for readCellOutput operation) */
+  temp_files?: string[];
   /** Number of cells deleted (for clearNotebook operation) */
   deletedCount?: number;
   /** Warning message (for session operations) */

@@ -714,8 +714,19 @@ export class NebulaClient {
      * If UI is connected, requests current state from UI.
      * Otherwise reads from file.
      */
-    async readNotebookViaRouter(path) {
-        const result = await this.fetch(`/api/notebook/read?path=${encodeURIComponent(path)}`);
+    async readNotebookViaRouter(path, options = {}) {
+        // Build query string with options
+        const params = new URLSearchParams({ path });
+        if (options.includeOutputs !== undefined) {
+            params.set('include_outputs', String(options.includeOutputs));
+        }
+        if (options.maxLines !== undefined) {
+            params.set('max_lines', String(options.maxLines));
+        }
+        if (options.maxChars !== undefined) {
+            params.set('max_chars', String(options.maxChars));
+        }
+        const result = await this.fetch(`/api/notebook/read?${params.toString()}`);
         if (!result.success) {
             return { success: false, error: result.error };
         }
@@ -963,6 +974,12 @@ export class NebulaClient {
      *
      * More efficient than readNotebook when you only need outputs.
      * Routes to UI if connected, otherwise reads from file.
+     *
+     * Supports truncation options for large outputs:
+     * - maxLines: Maximum lines to return (default: 100)
+     * - maxChars: Maximum characters to return (default: 10000)
+     * - lineOffset: Skip first N lines for pagination
+     * - saveToFile: Force save full output to temp file
      */
     async readCellOutputOp(path, options) {
         const operation = {
@@ -970,6 +987,11 @@ export class NebulaClient {
             notebookPath: path,
             cellId: options.cellId,
             cellIndex: options.cellIndex,
+            // Pass truncation options using snake_case for backend
+            max_lines: options.maxLines,
+            max_chars: options.maxChars,
+            line_offset: options.lineOffset,
+            save_to_file: options.saveToFile,
         };
         const result = await this.applyOperation(operation);
         if (!result.success) {
@@ -986,6 +1008,7 @@ export class NebulaClient {
                 executionCount: opResult.executionCount,
                 cellId: opResult.cellId,
                 cellIndex: opResult.cellIndex,
+                temp_files: opResult.temp_files,
             },
         };
     }
