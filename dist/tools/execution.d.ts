@@ -2,12 +2,16 @@
  * Execution Tools
  *
  * Tools for executing code in kernel sessions with streaming output.
+ *
+ * Truncation is handled by the backend (Python) for consistency with
+ * read_notebook and read_output tools. After execution, outputs are
+ * read back via readCellOutputOp which applies backend truncation.
  */
 import type { Tool } from './types.js';
 import type { CellOutput } from '../types.js';
 interface TruncatedOutput extends CellOutput {
     truncated?: boolean;
-    truncation_reason?: 'lines' | 'chars' | null;
+    truncation_reason?: string | null;
     total_lines?: number;
     total_chars?: number;
 }

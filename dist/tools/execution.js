@@ -2,77 +2,11 @@
  * Execution Tools
  *
  * Tools for executing code in kernel sessions with streaming output.
+ *
+ * Truncation is handled by the backend (Python) for consistency with
+ * read_notebook and read_output tools. After execution, outputs are
+ * read back via readCellOutputOp which applies backend truncation.
  */
-// =============================================================================
-// Truncation Defaults
-// =============================================================================
-const DEFAULT_MAX_LINES = 100;
-const DEFAULT_MAX_CHARS = 10000;
-function truncateOutput(content, maxLines, maxChars) {
-    const lines = content.split('\n');
-    const totalLines = lines.length;
-    const totalChars = content.length;
-    let truncated = false;
-    let truncationReason = null;
-    let resultLines = lines;
-    let endLine = totalLines;
-    // Truncate by lines first
-    if (totalLines > maxLines) {
-        resultLines = lines.slice(0, maxLines);
-        endLine = maxLines;
-        truncated = true;
-        truncationReason = 'lines';
-    }
-    let result = resultLines.join('\n');
-    // Then check chars (but always include at least one line)
-    if (result.length > maxChars && resultLines.length > 1) {
-        // Find how many complete lines fit within maxChars
-        let charCount = 0;
-        let lineCount = 0;
-        for (const line of resultLines) {
-            if (charCount + line.length + 1 > maxChars && lineCount > 0)
-                break;
-            charCount += line.length + 1;
-            lineCount++;
-        }
-        resultLines = resultLines.slice(0, Math.max(1, lineCount));
-        result = resultLines.join('\n');
-        endLine = resultLines.length;
-        truncated = true;
-        truncationReason = 'chars';
-    }
-    return {
-        content: result,
-        metadata: {
-            truncated,
-            truncation_reason: truncationReason,
-            total_lines: totalLines,
-            total_chars: totalChars,
-            returned_range: {
-                start_line: 0,
-                end_line: endLine,
-                char_count: result.length,
-            },
-        },
-    };
-}
-function truncateOutputs(outputs, maxLines, maxChars) {
-    return outputs.map(output => {
-        // Don't truncate images
-        if (output.type === 'image') {
-            return { ...output };
-        }
-        const { content, metadata } = truncateOutput(output.content, maxLines, maxChars);
-        return {
-            ...output,
-            content,
-            truncated: metadata.truncated,
-            truncation_reason: metadata.truncation_reason,
-            total_lines: metadata.total_lines,
-            total_chars: metadata.total_chars,
-        };
-    });
-}
 function formatOutputs(outputs) {
     return outputs.map(o => {
         if (o.type === 'image') {
@@ -125,9 +59,8 @@ export const executeCellTool = {
         }
         const maxWait = params.max_wait ?? 60;
         const saveOutputs = params.save_outputs ?? true;
-        const maxLines = params.max_lines ?? DEFAULT_MAX_LINES;
-        const maxChars = params.max_chars ?? DEFAULT_MAX_CHARS;
         const startTime = Date.now();
+        // Execute cell (outputs saved to notebook during execution)
         const result = await client.executeCell(params.path, sessionId, {
             cellIndex: params.cell_index,
             cellId: params.cell_id,
@@ -138,13 +71,31 @@ export const executeCellTool = {
         if (!result.success) {
             return { success: false, error: `Execution failed after ${elapsed.toFixed(1)}s: ${result.error}` };
         }
-        // Apply truncation to outputs
-        const outputs = truncateOutputs(result.data?.outputs ?? [], maxLines, maxChars);
+        const cellId = result.data?.cellId || params.cell_id || `${params.cell_index}`;
+        // Read outputs via backend with truncation applied
+        // This ensures truncation is consistent with read_notebook and read_output
+        const outputResult = await client.readCellOutputOp(params.path, {
+            cellId,
+            maxLines: params.max_lines,
+            maxChars: params.max_chars,
+        });
+        if (!outputResult.success) {
+            // Fallback: return execution succeeded but couldn't read truncated outputs
+            return {
+                success: true,
+                data: {
+                    cellId,
+                    outputs: result.data?.outputs ?? [],
+                    elapsed,
+                    saved: saveOutputs,
+                },
+            };
+        }
         return {
             success: true,
             data: {
-                cellId: result.data?.cellId || params.cell_id || `${params.cell_index}`,
-                outputs,
+                cellId,
+                outputs: outputResult.data?.outputs ?? [],
                 elapsed,
                 saved: saveOutputs,
             },
