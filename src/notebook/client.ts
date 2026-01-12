@@ -918,6 +918,8 @@ export class NebulaClient {
       includeOutputs?: boolean;
       maxLines?: number;
       maxChars?: number;
+      maxLinesError?: number;
+      maxCharsError?: number;
     } = {}
   ): Promise<ToolResult<Notebook>> {
     interface RouterReadResult {
@@ -940,6 +942,12 @@ export class NebulaClient {
     }
     if (options.maxChars !== undefined) {
       params.set('max_chars', String(options.maxChars));
+    }
+    if (options.maxLinesError !== undefined) {
+      params.set('max_lines_error', String(options.maxLinesError));
+    }
+    if (options.maxCharsError !== undefined) {
+      params.set('max_chars_error', String(options.maxCharsError));
     }
 
     const result = await this.fetch<RouterReadResult>(`/api/notebook/read?${params.toString()}`);
@@ -1252,8 +1260,10 @@ export class NebulaClient {
    * Routes to UI if connected, otherwise reads from file.
    *
    * Supports truncation options for large outputs:
-   * - maxLines: Maximum lines to return (default: 100)
-   * - maxChars: Maximum characters to return (default: 10000)
+   * - maxLines: Max lines for regular output (default: 100)
+   * - maxChars: Max characters for regular output (default: 10000)
+   * - maxLinesError: Max lines for error output (default: 200)
+   * - maxCharsError: Max characters for error output (default: 20000)
    * - lineOffset: Skip first N lines for pagination
    * - saveToFile: Force save full output to temp file
    */
@@ -1264,6 +1274,8 @@ export class NebulaClient {
       cellIndex?: number;
       maxLines?: number;
       maxChars?: number;
+      maxLinesError?: number;
+      maxCharsError?: number;
       lineOffset?: number;
       saveToFile?: boolean;
     }
@@ -1291,6 +1303,8 @@ export class NebulaClient {
       // Pass truncation options using snake_case for backend
       max_lines: options.maxLines,
       max_chars: options.maxChars,
+      max_lines_error: options.maxLinesError,
+      max_chars_error: options.maxCharsError,
       line_offset: options.lineOffset,
       save_to_file: options.saveToFile,
     };

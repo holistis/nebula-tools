@@ -263,6 +263,8 @@ export declare class NebulaClient {
         includeOutputs?: boolean;
         maxLines?: number;
         maxChars?: number;
+        maxLinesError?: number;
+        maxCharsError?: number;
     }): Promise<ToolResult<Notebook>>;
     /**
      * Check if a UI is connected for a notebook path
@@ -352,8 +354,10 @@ export declare class NebulaClient {
      * Routes to UI if connected, otherwise reads from file.
      *
      * Supports truncation options for large outputs:
-     * - maxLines: Maximum lines to return (default: 100)
-     * - maxChars: Maximum characters to return (default: 10000)
+     * - maxLines: Max lines for regular output (default: 100)
+     * - maxChars: Max characters for regular output (default: 10000)
+     * - maxLinesError: Max lines for error output (default: 200)
+     * - maxCharsError: Max characters for error output (default: 20000)
      * - lineOffset: Skip first N lines for pagination
      * - saveToFile: Force save full output to temp file
      */
@@ -362,6 +366,8 @@ export declare class NebulaClient {
         cellIndex?: number;
         maxLines?: number;
         maxChars?: number;
+        maxLinesError?: number;
+        maxCharsError?: number;
         lineOffset?: number;
         saveToFile?: boolean;
     }): Promise<ToolResult<{

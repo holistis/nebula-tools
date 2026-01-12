@@ -11,6 +11,8 @@ export interface ReadNotebookParams {
     format?: 'brief' | 'detailed';
     max_lines?: number;
     max_chars?: number;
+    max_lines_error?: number;
+    max_chars_error?: number;
 }
 export interface ReadNotebookResult {
     path: string;
@@ -36,6 +38,8 @@ export interface ReadOutputParams {
     max_wait?: number;
     max_lines?: number;
     max_chars?: number;
+    max_lines_error?: number;
+    max_chars_error?: number;
     line_offset?: number;
     save_to_file?: boolean;
 }

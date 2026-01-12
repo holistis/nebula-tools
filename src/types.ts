@@ -216,9 +216,12 @@ export interface ReadCellOutputOp {
   notebookPath: string;
   cellId?: string;
   cellIndex?: number;
-  // Truncation parameters
+  // Truncation parameters for regular outputs
   max_lines?: number;
   max_chars?: number;
+  // Separate limits for error outputs (tracebacks need more context)
+  max_lines_error?: number;
+  max_chars_error?: number;
   line_offset?: number;
   save_to_file?: boolean;
 }

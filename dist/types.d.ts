@@ -195,6 +195,8 @@ export interface ReadCellOutputOp {
     cellIndex?: number;
     max_lines?: number;
     max_chars?: number;
+    max_lines_error?: number;
+    max_chars_error?: number;
     line_offset?: number;
     save_to_file?: boolean;
 }

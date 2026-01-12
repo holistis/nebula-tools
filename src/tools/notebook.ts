@@ -42,6 +42,9 @@ export interface ReadNotebookParams {
   // Truncation parameters for outputs (when include_outputs=true)
   max_lines?: number;
   max_chars?: number;
+  // Separate limits for error outputs (tracebacks need more context)
+  max_lines_error?: number;
+  max_chars_error?: number;
 }
 
 export interface ReadNotebookResult {
@@ -53,15 +56,17 @@ export interface ReadNotebookResult {
 export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   definition: {
     name: 'read_notebook',
-    description: 'Read all cells from a notebook. Use format="brief" for overview, "detailed" for full content. Outputs are included and truncated by default (100 lines, 10000 chars per output). Use include_outputs=false to exclude outputs entirely.',
+    description: 'Read all cells from a notebook. Use format="brief" for overview, "detailed" for full content. Outputs are included and truncated by default (100 lines for regular output, 200 lines for errors). Use include_outputs=false to exclude outputs entirely.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the notebook file (.ipynb)' },
         include_outputs: { type: 'boolean', description: 'Include cell outputs (default: true). Outputs are automatically truncated.' },
         format: { type: 'string', enum: ['brief', 'detailed'], description: 'Output format (default: brief)' },
-        max_lines: { type: 'number', description: 'Max lines per output (default: 100)' },
-        max_chars: { type: 'number', description: 'Max chars per output (default: 10000)' },
+        max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
+        max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
+        max_lines_error: { type: 'number', description: 'Max lines per error output (default: 200)' },
+        max_chars_error: { type: 'number', description: 'Max chars per error output (default: 20000)' },
       },
       required: ['path'],
     },
@@ -73,6 +78,8 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
       includeOutputs: params.include_outputs ?? true,  // Default to true
       maxLines: params.max_lines,
       maxChars: params.max_chars,
+      maxLinesError: params.max_lines_error,
+      maxCharsError: params.max_chars_error,
     });
     if (!result.success) {
       return { success: false, error: result.error };
@@ -168,9 +175,12 @@ export interface ReadOutputParams {
   cell_id?: string;
   output_offset?: number;
   max_wait?: number;
-  // Truncation parameters
+  // Truncation parameters for regular outputs
   max_lines?: number;
   max_chars?: number;
+  // Separate limits for error outputs (tracebacks need more context)
+  max_lines_error?: number;
+  max_chars_error?: number;
   line_offset?: number;
   save_to_file?: boolean;
 }
@@ -201,7 +211,7 @@ export interface ReadOutputResult {
 export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
   definition: {
     name: 'read_output',
-    description: 'Read cell outputs with smart truncation. Large outputs are automatically truncated (100 lines, 10000 chars) and can be paginated with line_offset. Use save_to_file=true to save complete output to a temp file for analysis.',
+    description: 'Read cell outputs with smart truncation. Regular outputs are truncated to 100 lines, error outputs (tracebacks) get 200 lines. Use save_to_file=true to save complete output to a temp file for analysis.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -210,8 +220,10 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
         cell_id: { type: 'string', description: 'Stable cell ID. Use this OR cell_index.' },
         output_offset: { type: 'number', description: 'Skip first N outputs (default: 0)' },
         max_wait: { type: 'number', description: 'Wait up to N seconds for new outputs (default: 0)' },
-        max_lines: { type: 'number', description: 'Maximum lines to return per output (default: 100)' },
-        max_chars: { type: 'number', description: 'Maximum characters to return per output (default: 10000)' },
+        max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
+        max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
+        max_lines_error: { type: 'number', description: 'Max lines per error output (default: 200)' },
+        max_chars_error: { type: 'number', description: 'Max chars per error output (default: 20000)' },
         line_offset: { type: 'number', description: 'Skip first N lines for pagination (default: 0). Use with truncation metadata to paginate through large outputs.' },
         save_to_file: { type: 'boolean', description: 'Save full output to temp file for analysis (default: false).' },
       },
@@ -231,6 +243,8 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
     const truncationOpts = {
       maxLines: params.max_lines,
       maxChars: params.max_chars,
+      maxLinesError: params.max_lines_error,
+      maxCharsError: params.max_chars_error,
       lineOffset: params.line_offset,
       saveToFile: params.save_to_file,
     };
