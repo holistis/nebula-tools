@@ -162,8 +162,12 @@ export interface UpdateMetadataOp {
 export interface MoveCellOp {
   type: 'moveCell';
   notebookPath: string;
-  fromIndex: number;
-  toIndex: number;
+  fromIndex?: number;
+  toIndex?: number;
+  /** Cell ID to move (alternative to fromIndex) */
+  cellId?: string;
+  /** Move after this cell ID (alternative to toIndex) */
+  afterCellId?: string;
 }
 
 /**
@@ -251,6 +255,54 @@ export interface EndAgentSessionOp {
   notebookPath: string;
 }
 
+// =============================================================================
+// Batch Operations (Phase 1 enhancements)
+// =============================================================================
+
+/**
+ * Delete multiple cells by ID
+ */
+export interface DeleteCellsOp {
+  type: 'deleteCells';
+  notebookPath: string;
+  cellIds: string[];
+}
+
+/**
+ * Insert multiple cells at a position
+ */
+export interface InsertCellsOp {
+  type: 'insertCells';
+  notebookPath: string;
+  cells: Array<{
+    id?: string;
+    type?: 'code' | 'markdown';
+    content: string;
+  }>;
+  position?: number;
+}
+
+/**
+ * Search cells by keyword in source and/or outputs
+ */
+export interface SearchCellsOp {
+  type: 'searchCells';
+  notebookPath: string;
+  query: string;
+  includeOutputs?: boolean;
+  limit?: number;
+}
+
+/**
+ * Clear outputs from cells
+ */
+export interface ClearOutputsOp {
+  type: 'clearOutputs';
+  notebookPath: string;
+  cellId?: string;
+  cellIds?: string[];
+}
+
 /**
  * Union of all notebook operations
  */
@@ -267,7 +319,12 @@ export type NotebookOperation =
   | ReadCellOutputOp
   | ClearNotebookOp
   | StartAgentSessionOp
-  | EndAgentSessionOp;
+  | EndAgentSessionOp
+  // Batch operations (Phase 1 enhancements)
+  | DeleteCellsOp
+  | InsertCellsOp
+  | SearchCellsOp
+  | ClearOutputsOp;
 
 /**
  * Result of applying an operation
@@ -311,6 +368,40 @@ export interface OperationResult {
   warning?: string;
   /** Session duration in ms (for endAgentSession operation) */
   sessionDuration?: number;
+
+  // Batch operation fields (Phase 1 enhancements)
+  /** Deleted cell IDs (for deleteCells operation) */
+  deletedIds?: string[];
+  /** IDs that were not found (for batch operations) */
+  notFound?: string[];
+  /** Total cells in notebook after operation */
+  totalCells?: number;
+  /** Inserted cell count (for insertCells operation) */
+  insertedCount?: number;
+  /** Inserted cell IDs (for insertCells operation) */
+  insertedIds?: string[];
+  /** Start index where cells were inserted */
+  startIndex?: number;
+  /** Move operation results */
+  fromIndex?: number;
+  toIndex?: number;
+  /** Search results */
+  query?: string;
+  matchCount?: number;
+  matches?: Array<{
+    cellId: string;
+    cellIndex: number;
+    matchLocation: 'source' | 'output';
+    matchLine?: number;
+    outputIndex?: number;
+    outputType?: string;
+    preview: string;
+  }>;
+  hasMore?: boolean;
+  /** Clear outputs results */
+  clearedCount?: number;
+  clearedIds?: string[];
+
   /** Extensible metadata container (Phase 2 ready) */
   metadata?: {
     /** Total cells in notebook after operation */

@@ -1131,13 +1131,31 @@ export class NebulaClient {
 
   /**
    * Move a cell using the operation router
+   *
+   * Supports two modes:
+   * 1. By index: moveCellOp(path, 0, 5) - move from index 0 to 5
+   * 2. By ID: moveCellOp(path, 0, 0, { cellId: 'cell-1', afterCellId: 'cell-2' })
    */
-  async moveCellOp(path: string, fromIndex: number, toIndex: number): Promise<ToolResult<void>> {
-    const operation: import('../types.js').MoveCellOp = {
-      type: 'moveCell',
+  async moveCellOp(
+    path: string,
+    fromIndex: number,
+    toIndex: number,
+    options?: {
+      cellId?: string;
+      afterCellId?: string;
+    }
+  ): Promise<ToolResult<{
+    cellId?: string;
+    fromIndex: number;
+    toIndex: number;
+  }>> {
+    const operation = {
+      type: 'moveCell' as const,
       notebookPath: path,
       fromIndex,
       toIndex,
+      ...(options?.cellId && { cellId: options.cellId }),
+      ...(options?.afterCellId && { afterCellId: options.afterCellId }),
     };
 
     const result = await this.applyOperation(operation);
@@ -1150,7 +1168,14 @@ export class NebulaClient {
       return { success: false, error: opResult.error };
     }
 
-    return { success: true };
+    return {
+      success: true,
+      data: {
+        cellId: opResult.cellId,
+        fromIndex: opResult.fromIndex ?? fromIndex,
+        toIndex: opResult.toIndex ?? toIndex,
+      },
+    };
   }
 
   /**
@@ -1361,6 +1386,189 @@ export class NebulaClient {
       data: {
         deletedCount: opResult.deletedCount ?? 0,
         metadata: opResult.metadata  // Phase 2 ready: include metadata from backend
+      },
+    };
+  }
+
+  // ===========================================================================
+  // Batch Operations (Phase 1 enhancements)
+  // ===========================================================================
+
+  /**
+   * Delete multiple cells by ID in a single operation
+   *
+   * More efficient than multiple single deletes - handles index shifting automatically.
+   */
+  async deleteCellsOp(path: string, cellIds: string[]): Promise<ToolResult<{
+    deletedCount: number;
+    deletedIds: string[];
+    notFound?: string[];
+    totalCells: number;
+  }>> {
+    const operation = {
+      type: 'deleteCells' as const,
+      notebookPath: path,
+      cellIds,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        deletedCount: opResult.deletedCount ?? 0,
+        deletedIds: opResult.deletedIds ?? [],
+        notFound: opResult.notFound,
+        totalCells: opResult.totalCells ?? 0,
+      },
+    };
+  }
+
+  /**
+   * Insert multiple cells at a position in a single operation
+   *
+   * More efficient than multiple single inserts.
+   */
+  async insertCellsOp(
+    path: string,
+    cells: Array<{
+      id?: string;
+      type?: 'code' | 'markdown';
+      content: string;
+    }>,
+    position: number = -1
+  ): Promise<ToolResult<{
+    insertedCount: number;
+    insertedIds: string[];
+    startIndex: number;
+    totalCells: number;
+  }>> {
+    const operation = {
+      type: 'insertCells' as const,
+      notebookPath: path,
+      cells,
+      position,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        insertedCount: opResult.insertedCount ?? 0,
+        insertedIds: opResult.insertedIds ?? [],
+        startIndex: opResult.startIndex ?? 0,
+        totalCells: opResult.totalCells ?? 0,
+      },
+    };
+  }
+
+  /**
+   * Search cells with optional output search
+   *
+   * Enhanced version that can search in cell outputs as well as source code.
+   */
+  async searchCellsOp(
+    path: string,
+    query: string,
+    options: {
+      includeOutputs?: boolean;
+      limit?: number;
+    } = {}
+  ): Promise<ToolResult<{
+    query: string;
+    matchCount: number;
+    matches: Array<{
+      cellId: string;
+      cellIndex: number;
+      matchLocation: 'source' | 'output';
+      matchLine?: number;
+      outputIndex?: number;
+      outputType?: string;
+      preview: string;
+    }>;
+    hasMore: boolean;
+  }>> {
+    const operation = {
+      type: 'searchCells' as const,
+      notebookPath: path,
+      query,
+      includeOutputs: options.includeOutputs ?? false,
+      limit: options.limit ?? 10,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        query: opResult.query ?? query,
+        matchCount: opResult.matchCount ?? 0,
+        matches: opResult.matches ?? [],
+        hasMore: opResult.hasMore ?? false,
+      },
+    };
+  }
+
+  /**
+   * Clear outputs from one or more cells
+   *
+   * Useful for cleanup before sharing notebooks.
+   */
+  async clearOutputsOp(
+    path: string,
+    cellIds?: string[]
+  ): Promise<ToolResult<{
+    clearedCount: number;
+    clearedIds: string[];
+    notFound?: string[];
+  }>> {
+    const operation = {
+      type: 'clearOutputs' as const,
+      notebookPath: path,
+      ...(cellIds && cellIds.length > 0 ? { cellIds } : {}),
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    return {
+      success: true,
+      data: {
+        clearedCount: opResult.clearedCount ?? 0,
+        clearedIds: opResult.clearedIds ?? [],
+        notFound: opResult.notFound,
       },
     };
   }

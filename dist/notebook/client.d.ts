@@ -317,8 +317,19 @@ export declare class NebulaClient {
     updateMetadataOp(path: string, cellId: string, changes: Record<string, unknown>): Promise<ToolResult<void>>;
     /**
      * Move a cell using the operation router
+     *
+     * Supports two modes:
+     * 1. By index: moveCellOp(path, 0, 5) - move from index 0 to 5
+     * 2. By ID: moveCellOp(path, 0, 0, { cellId: 'cell-1', afterCellId: 'cell-2' })
      */
-    moveCellOp(path: string, fromIndex: number, toIndex: number): Promise<ToolResult<void>>;
+    moveCellOp(path: string, fromIndex: number, toIndex: number, options?: {
+        cellId?: string;
+        afterCellId?: string;
+    }): Promise<ToolResult<{
+        cellId?: string;
+        fromIndex: number;
+        toIndex: number;
+    }>>;
     /**
      * Duplicate a cell using the operation router
      */
@@ -402,6 +413,64 @@ export declare class NebulaClient {
             totalCells?: number;
             operationTime?: number;
         };
+    }>>;
+    /**
+     * Delete multiple cells by ID in a single operation
+     *
+     * More efficient than multiple single deletes - handles index shifting automatically.
+     */
+    deleteCellsOp(path: string, cellIds: string[]): Promise<ToolResult<{
+        deletedCount: number;
+        deletedIds: string[];
+        notFound?: string[];
+        totalCells: number;
+    }>>;
+    /**
+     * Insert multiple cells at a position in a single operation
+     *
+     * More efficient than multiple single inserts.
+     */
+    insertCellsOp(path: string, cells: Array<{
+        id?: string;
+        type?: 'code' | 'markdown';
+        content: string;
+    }>, position?: number): Promise<ToolResult<{
+        insertedCount: number;
+        insertedIds: string[];
+        startIndex: number;
+        totalCells: number;
+    }>>;
+    /**
+     * Search cells with optional output search
+     *
+     * Enhanced version that can search in cell outputs as well as source code.
+     */
+    searchCellsOp(path: string, query: string, options?: {
+        includeOutputs?: boolean;
+        limit?: number;
+    }): Promise<ToolResult<{
+        query: string;
+        matchCount: number;
+        matches: Array<{
+            cellId: string;
+            cellIndex: number;
+            matchLocation: 'source' | 'output';
+            matchLine?: number;
+            outputIndex?: number;
+            outputType?: string;
+            preview: string;
+        }>;
+        hasMore: boolean;
+    }>>;
+    /**
+     * Clear outputs from one or more cells
+     *
+     * Useful for cleanup before sharing notebooks.
+     */
+    clearOutputsOp(path: string, cellIds?: string[]): Promise<ToolResult<{
+        clearedCount: number;
+        clearedIds: string[];
+        notFound?: string[];
     }>>;
     /**
      * Start an agent session (locks notebook for agent use).

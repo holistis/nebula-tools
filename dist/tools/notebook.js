@@ -432,27 +432,42 @@ export const clearNotebookTool = {
 export const moveCellTool = {
     definition: {
         name: 'move_cell',
-        description: 'Move a cell from one position to another',
+        description: 'Move a cell from one position to another. Supports two modes: by index (from_index, to_index) or by ID (cell_id with after_cell_id or to_index=-1 for start).',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'Path to the notebook file' },
-                from_index: { type: 'number', description: 'Current cell index (0-based)' },
-                to_index: { type: 'number', description: 'Target cell index (0-based)' },
+                from_index: { type: 'number', description: 'Current cell index (0-based). Use this OR cell_id.' },
+                to_index: { type: 'number', description: 'Target cell index (0-based). Use -1 to move to start.' },
+                cell_id: { type: 'string', description: 'ID of cell to move. Use this OR from_index.' },
+                after_cell_id: { type: 'string', description: 'Move after this cell ID. Alternative to to_index.' },
             },
-            required: ['path', 'from_index', 'to_index'],
+            required: ['path'],
         },
         annotations: { destructiveHint: true },
     },
     async execute(params, client) {
-        const result = await client.moveCellOp(params.path, params.from_index, params.to_index);
-        return result.success ? { success: true } : { success: false, error: result.error };
+        const { path, from_index, to_index, cell_id, after_cell_id } = params;
+        // Validate parameters
+        if (from_index === undefined && !cell_id) {
+            return { success: false, error: 'Must provide from_index or cell_id' };
+        }
+        if (to_index === undefined && !after_cell_id) {
+            return { success: false, error: 'Must provide to_index or after_cell_id' };
+        }
+        const result = await client.moveCellOp(path, from_index ?? 0, to_index ?? 0, { cellId: cell_id, afterCellId: after_cell_id });
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return { success: true, data: result.data };
     },
     formatForMCP(result) {
         if (!result.success) {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
-        return [{ type: 'text', text: 'Cell moved' }];
+        const { cellId, fromIndex, toIndex } = result.data;
+        const idInfo = cellId ? ` (id="${cellId}")` : '';
+        return [{ type: 'text', text: `Cell moved from index ${fromIndex} to ${toIndex}${idInfo}` }];
     },
 };
 export const duplicateCellTool = {
@@ -497,20 +512,24 @@ export const duplicateCellTool = {
 export const searchCellsTool = {
     definition: {
         name: 'search_cells',
-        description: 'Search notebook cells by keyword',
+        description: 'Search notebook cells by keyword. Can search in cell source code and optionally in outputs.',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'Path to the notebook file' },
                 query: { type: 'string', description: 'Search query (keywords)' },
-                limit: { type: 'number', description: 'Maximum results (default: 5)' },
+                include_outputs: { type: 'boolean', description: 'Also search in cell outputs (default: false)' },
+                limit: { type: 'number', description: 'Maximum results (default: 10)' },
             },
             required: ['path', 'query'],
         },
         annotations: { readOnlyHint: true },
     },
     async execute(params, client) {
-        const result = await client.searchCells(params.path, params.query, params.limit ?? 5);
+        const result = await client.searchCellsOp(params.path, params.query, {
+            includeOutputs: params.include_outputs,
+            limit: params.limit,
+        });
         if (!result.success) {
             return { success: false, error: result.error };
         }
@@ -520,16 +539,21 @@ export const searchCellsTool = {
         if (!result.success) {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
-        const { cells } = result.data;
-        if (cells.length === 0) {
+        const { matches, matchCount, hasMore } = result.data;
+        if (matches.length === 0) {
             return [{ type: 'text', text: 'No matching cells found' }];
         }
-        const lines = [`Found ${cells.length} cells:\n`];
-        cells.forEach(c => {
-            const preview = c.content.split('\n')[0].substring(0, 80);
-            lines.push(`Cell ${c.index} [${c.type}] (score: ${c.score.toFixed(1)})`);
-            lines.push(`  ${preview}${c.content.length > 80 ? '...' : ''}`);
+        const lines = [`Found ${matchCount} matches:\n`];
+        matches.forEach(m => {
+            const location = m.matchLocation === 'output'
+                ? `output[${m.outputIndex}] (${m.outputType})`
+                : `source${m.matchLine !== undefined ? `:${m.matchLine}` : ''}`;
+            lines.push(`Cell ${m.cellIndex} [${location}] id="${m.cellId}"`);
+            lines.push(`  ${m.preview}`);
         });
+        if (hasMore) {
+            lines.push(`\n(more results available, increase limit)`);
+        }
         return [{ type: 'text', text: lines.join('\n') }];
     },
 };
@@ -700,6 +724,127 @@ export const endAgentSessionTool = {
         return [{ type: 'text', text: msg }];
     },
 };
+export const deleteCellsTool = {
+    definition: {
+        name: 'delete_cells',
+        description: 'Delete multiple cells by ID in a single operation. More efficient than multiple single deletes.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+                cell_ids: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Array of cell IDs to delete',
+                },
+            },
+            required: ['path', 'cell_ids'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        if (!params.cell_ids || params.cell_ids.length === 0) {
+            return { success: false, error: 'Must provide at least one cell ID' };
+        }
+        const result = await client.deleteCellsOp(params.path, params.cell_ids);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return { success: true, data: result.data };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { deletedCount, deletedIds, notFound, totalCells } = result.data;
+        let msg = `Deleted ${deletedCount} cells: ${deletedIds.join(', ')}`;
+        if (notFound && notFound.length > 0) {
+            msg += `\n⚠️ Not found: ${notFound.join(', ')}`;
+        }
+        msg += ` (${totalCells} cells remaining)`;
+        return [{ type: 'text', text: msg }];
+    },
+};
+export const insertCellsTool = {
+    definition: {
+        name: 'insert_cells',
+        description: 'Insert multiple cells at a position in a single operation. More efficient than multiple single inserts.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+                cells: {
+                    type: 'array',
+                    items: { type: 'object' },
+                    description: 'Array of cells to insert. Each cell: {id?: string, type?: "code"|"markdown", content: string}',
+                },
+                position: { type: 'number', description: 'Position to insert at (0-based). Use -1 or omit to append at end.' },
+            },
+            required: ['path', 'cells'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        if (!params.cells || params.cells.length === 0) {
+            return { success: false, error: 'Must provide at least one cell' };
+        }
+        const result = await client.insertCellsOp(params.path, params.cells, params.position ?? -1);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return { success: true, data: result.data };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { insertedCount, insertedIds, startIndex, totalCells } = result.data;
+        return [{ type: 'text', text: `Inserted ${insertedCount} cells at index ${startIndex}: ${insertedIds.join(', ')} (${totalCells} cells total)` }];
+    },
+};
+export const clearOutputsTool = {
+    definition: {
+        name: 'clear_outputs',
+        description: 'Clear outputs from cells without re-executing. If no cell_ids provided, clears all cell outputs. Useful for cleanup before sharing notebooks.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+                cell_ids: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Optional array of cell IDs to clear. If omitted, clears all cells.',
+                },
+            },
+            required: ['path'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        const result = await client.clearOutputsOp(params.path, params.cell_ids);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return { success: true, data: result.data };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { clearedCount, clearedIds, notFound } = result.data;
+        if (clearedCount === 0) {
+            return [{ type: 'text', text: 'No outputs to clear' }];
+        }
+        let msg = `Cleared outputs from ${clearedCount} cells`;
+        if (clearedIds.length <= 5) {
+            msg += `: ${clearedIds.join(', ')}`;
+        }
+        if (notFound && notFound.length > 0) {
+            msg += `\n⚠️ Not found: ${notFound.join(', ')}`;
+        }
+        return [{ type: 'text', text: msg }];
+    },
+};
 // =============================================================================
 // Export all notebook tools
 // =============================================================================
@@ -718,5 +863,9 @@ export const notebookTools = [
     connectServerTool,
     startAgentSessionTool,
     endAgentSessionTool,
+    // Batch operations (Phase 1 enhancements)
+    deleteCellsTool,
+    insertCellsTool,
+    clearOutputsTool,
 ];
 //# sourceMappingURL=notebook.js.map
