@@ -242,17 +242,9 @@ export const readOutputTool = {
         mcpOutputs.push({ type: 'text', text: headerInfo + '\n' });
         // Format each output with truncation metadata
         for (const output of outputs) {
-            // Image outputs from read_output are placeholders (is_binary: true)
-            // Only return actual images if content is base64 data, not placeholder text
+            // Images are returned as-is (not affected by truncation limits)
             if (output.type === 'image') {
-                if (output.is_binary && output.content.startsWith('[')) {
-                    // Placeholder text, return as text
-                    mcpOutputs.push({ type: 'text', text: output.content });
-                }
-                else {
-                    // Actual image data
-                    mcpOutputs.push({ type: 'image', data: output.content, mimeType: 'image/png' });
-                }
+                mcpOutputs.push({ type: 'image', data: output.content, mimeType: 'image/png' });
                 continue;
             }
             let text = output.type === 'error' ? '[ERROR] ' + output.content : output.content;
