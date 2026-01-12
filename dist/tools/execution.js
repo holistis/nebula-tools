@@ -24,7 +24,9 @@ function formatOutputs(outputs) {
 export const executeCellTool = {
     definition: {
         name: 'execute_cell',
-        description: 'Execute a notebook cell and return its output. Outputs are truncated by default (100 lines, 10000 chars). Outputs are saved incrementally during execution. Requires an active kernel session.',
+        description: `Execute a notebook cell and return its output. Outputs are truncated by default (100 lines, 10000 chars). Outputs are saved incrementally during execution. Requires an active kernel session.
+
+For long-running cells: If execution exceeds max_wait, returns with status="busy" and partial output. Use read_output with max_wait to poll for more output. Set max_wait=0 for immediate "background" execution (returns right away, poll with read_output).`,
         inputSchema: {
             type: 'object',
             properties: {
@@ -32,7 +34,7 @@ export const executeCellTool = {
                 cell_index: { type: 'number', description: 'Cell index to execute (0-based). Use this OR cell_id.' },
                 cell_id: { type: 'string', description: 'Stable cell ID. Use this OR cell_index.' },
                 session_id: { type: 'string', description: 'Kernel session ID. If not provided, will try to get/create one.' },
-                max_wait: { type: 'number', description: 'Max seconds to wait for completion (default: 60)' },
+                max_wait: { type: 'number', description: 'Max seconds to wait for completion (default: 10). Use 0 for background execution.' },
                 save_outputs: { type: 'boolean', description: 'Save outputs back to the notebook (default: true)' },
                 max_lines: { type: 'number', description: 'Max lines per output (default: 100)' },
                 max_chars: { type: 'number', description: 'Max chars per output (default: 10000)' },
@@ -57,7 +59,7 @@ export const executeCellTool = {
         if (!sessionId) {
             return { success: false, error: 'No kernel session available' };
         }
-        const maxWait = params.max_wait ?? 60;
+        const maxWait = params.max_wait ?? 10;
         const saveOutputs = params.save_outputs ?? true;
         const startTime = Date.now();
         // Execute cell (outputs saved to notebook during execution)

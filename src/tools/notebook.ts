@@ -211,7 +211,7 @@ export interface ReadOutputResult {
 export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
   definition: {
     name: 'read_output',
-    description: 'Read cell outputs with smart truncation. Regular outputs are truncated to 100 lines, error outputs (tracebacks) get 200 lines. Use save_to_file=true to save complete output to a temp file for analysis.',
+    description: `Read cell outputs. Use max_wait to poll for new outputs from long-running executions (returns when new output appears or timeout). Regular outputs truncated to 100 lines, errors get 200 lines. Use save_to_file=true for complete output.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -219,7 +219,7 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
         cell_index: { type: 'number', description: 'Cell index (0-based). Use this OR cell_id.' },
         cell_id: { type: 'string', description: 'Stable cell ID. Use this OR cell_index.' },
         output_offset: { type: 'number', description: 'Skip first N outputs (default: 0)' },
-        max_wait: { type: 'number', description: 'Wait up to N seconds for new outputs (default: 0)' },
+        max_wait: { type: 'number', description: 'Wait up to N seconds for new outputs (default: 0). Use for polling long-running cells.' },
         max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
         max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
         max_lines_error: { type: 'number', description: 'Max lines per error output (default: 200)' },
