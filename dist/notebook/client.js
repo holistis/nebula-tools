@@ -1184,6 +1184,48 @@ export class NebulaClient {
         };
     }
     // ===========================================================================
+    // Execution Operations
+    // ===========================================================================
+    /**
+     * Execute a cell through the operation router
+     *
+     * Routes to UI if connected (shows running indicator) or executes in headless mode.
+     * For long-running cells, returns with status="busy" after maxWait seconds.
+     * Use readCellOutputOp with max_wait to poll for more output.
+     */
+    async executeCellOp(path, options) {
+        const operation = {
+            type: 'executeCell',
+            notebookPath: path,
+            cellId: options.cellId,
+            cellIndex: options.cellIndex,
+            sessionId: options.sessionId,
+            maxWait: options.maxWait,
+            saveOutputs: options.saveOutputs,
+        };
+        const result = await this.applyOperation(operation);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        const opResult = result.data;
+        if (!opResult.success) {
+            return { success: false, error: opResult.error };
+        }
+        return {
+            success: true,
+            data: {
+                cellId: opResult.cellId,
+                cellIndex: opResult.cellIndex,
+                executionStatus: opResult.executionStatus ?? 'idle',
+                executionCount: opResult.executionCount,
+                outputs: opResult.outputs ?? [],
+                executionTime: opResult.executionTime,
+                sessionId: opResult.sessionId,
+                error: opResult.error,
+            },
+        };
+    }
+    // ===========================================================================
     // Agent Session Management
     // ===========================================================================
     //

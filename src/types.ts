@@ -304,6 +304,25 @@ export interface ClearOutputsOp {
 }
 
 /**
+ * Execute a cell
+ *
+ * Routes through operation router so UI can show running indicator.
+ * In headless mode, executes directly via kernel.
+ */
+export interface ExecuteCellOp {
+  type: 'executeCell';
+  notebookPath: string;
+  cellId?: string;
+  cellIndex?: number;
+  /** Kernel session ID. If not provided, will try to get/create one. */
+  sessionId?: string;
+  /** Max seconds to wait for completion (default: 10). Use 0 for background execution. */
+  maxWait?: number;
+  /** Save outputs back to notebook (default: true) */
+  saveOutputs?: boolean;
+}
+
+/**
  * Union of all notebook operations
  */
 export type NotebookOperation =
@@ -324,7 +343,9 @@ export type NotebookOperation =
   | DeleteCellsOp
   | InsertCellsOp
   | SearchCellsOp
-  | ClearOutputsOp;
+  | ClearOutputsOp
+  // Execution
+  | ExecuteCellOp;
 
 /**
  * Result of applying an operation
@@ -401,6 +422,11 @@ export interface OperationResult {
   /** Clear outputs results */
   clearedCount?: number;
   clearedIds?: string[];
+
+  /** Execution results (for executeCell operation) */
+  executionStatus?: 'idle' | 'busy' | 'error';
+  executionTime?: number;
+  sessionId?: string;
 
   /** Extensible metadata container (Phase 2 ready) */
   metadata?: {

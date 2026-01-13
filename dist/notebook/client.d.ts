@@ -473,6 +473,29 @@ export declare class NebulaClient {
         notFound?: string[];
     }>>;
     /**
+     * Execute a cell through the operation router
+     *
+     * Routes to UI if connected (shows running indicator) or executes in headless mode.
+     * For long-running cells, returns with status="busy" after maxWait seconds.
+     * Use readCellOutputOp with max_wait to poll for more output.
+     */
+    executeCellOp(path: string, options: {
+        cellId?: string;
+        cellIndex?: number;
+        sessionId?: string;
+        maxWait?: number;
+        saveOutputs?: boolean;
+    }): Promise<ToolResult<{
+        cellId: string;
+        cellIndex: number;
+        executionStatus: 'idle' | 'busy' | 'error';
+        executionCount?: number;
+        outputs: Array<import('../types.js').CellOutput>;
+        executionTime?: number;
+        sessionId?: string;
+        error?: string;
+    }>>;
+    /**
      * Start an agent session (locks notebook for agent use).
      * If a session is already active, returns a warning but still starts a new session.
      */

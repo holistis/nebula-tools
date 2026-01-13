@@ -30,6 +30,7 @@ export interface ExecuteCellResult {
     outputs: TruncatedOutput[];
     elapsed: number;
     saved: boolean;
+    status?: 'idle' | 'busy' | 'error';
 }
 export declare const executeCellTool: Tool<ExecuteCellParams, ExecuteCellResult>;
 export declare const executionTools: Tool<ExecuteCellParams, ExecuteCellResult>[];

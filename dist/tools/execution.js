@@ -47,33 +47,22 @@ For long-running cells: If execution exceeds max_wait, returns with status="busy
         if (params.cell_index === undefined && !params.cell_id) {
             return { success: false, error: 'Must provide either cell_index or cell_id' };
         }
-        let sessionId = params.session_id;
-        // Get or create kernel session if not provided
-        if (!sessionId) {
-            const kernelResult = await client.getOrCreateKernelForFile(params.path);
-            if (!kernelResult.success) {
-                return { success: false, error: kernelResult.error || 'Failed to get kernel for notebook' };
-            }
-            sessionId = kernelResult.data?.sessionId;
-        }
-        if (!sessionId) {
-            return { success: false, error: 'No kernel session available' };
-        }
         const maxWait = params.max_wait ?? 10;
         const saveOutputs = params.save_outputs ?? true;
-        const startTime = Date.now();
-        // Execute cell (outputs saved to notebook during execution)
-        const result = await client.executeCell(params.path, sessionId, {
-            cellIndex: params.cell_index,
+        // Execute via operation router (routes to UI if connected, else headless)
+        // This ensures UI shows running indicator when connected
+        const result = await client.executeCellOp(params.path, {
             cellId: params.cell_id,
-            timeout: maxWait * 1000,
-            save: saveOutputs,
+            cellIndex: params.cell_index,
+            sessionId: params.session_id,
+            maxWait,
+            saveOutputs,
         });
-        const elapsed = (Date.now() - startTime) / 1000;
         if (!result.success) {
-            return { success: false, error: `Execution failed after ${elapsed.toFixed(1)}s: ${result.error}` };
+            return { success: false, error: result.error };
         }
-        const cellId = result.data?.cellId || params.cell_id || `${params.cell_index}`;
+        const { cellId, executionStatus, executionTime, outputs } = result.data;
+        const elapsed = (executionTime ?? 0) / 1000;
         // Read outputs via backend with truncation applied
         // This ensures truncation is consistent with read_notebook and read_output
         const outputResult = await client.readCellOutputOp(params.path, {
@@ -81,25 +70,17 @@ For long-running cells: If execution exceeds max_wait, returns with status="busy
             maxLines: params.max_lines,
             maxChars: params.max_chars,
         });
-        if (!outputResult.success) {
-            // Fallback: return execution succeeded but couldn't read truncated outputs
-            return {
-                success: true,
-                data: {
-                    cellId,
-                    outputs: result.data?.outputs ?? [],
-                    elapsed,
-                    saved: saveOutputs,
-                },
-            };
-        }
+        const truncatedOutputs = outputResult.success
+            ? outputResult.data?.outputs ?? outputs
+            : outputs;
         return {
             success: true,
             data: {
                 cellId,
-                outputs: outputResult.data?.outputs ?? [],
+                outputs: truncatedOutputs,
                 elapsed,
                 saved: saveOutputs,
+                status: executionStatus,
             },
         };
     },
@@ -107,13 +88,14 @@ For long-running cells: If execution exceeds max_wait, returns with status="busy
         if (!result.success) {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
-        const { cellId, outputs, elapsed, saved } = result.data;
+        const { cellId, outputs, elapsed, saved, status } = result.data;
         const savedMsg = saved ? ' (outputs saved)' : '';
+        const statusMsg = status === 'busy' ? ' [still running - use read_output to poll]' : '';
         if (outputs.length === 0) {
-            return [{ type: 'text', text: `Cell ${cellId} executed in ${elapsed.toFixed(1)}s${savedMsg} (no output)` }];
+            return [{ type: 'text', text: `Cell ${cellId} executed in ${elapsed.toFixed(1)}s${savedMsg}${statusMsg} (no output)` }];
         }
         return [
-            { type: 'text', text: `Cell ${cellId} executed in ${elapsed.toFixed(1)}s${savedMsg}:\n` },
+            { type: 'text', text: `Cell ${cellId} executed in ${elapsed.toFixed(1)}s${savedMsg}${statusMsg}:\n` },
             ...formatOutputs(outputs),
         ];
     },
