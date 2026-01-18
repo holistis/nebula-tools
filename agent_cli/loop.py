@@ -38,6 +38,7 @@ class LoopConfig:
     backend: str = "openai"
     model: str = DEFAULT_MODEL
     fallback_model: Optional[str] = None
+    temperature: Optional[float] = None
     max_context_chars: int = 200_000
     auto_compact_chars: int = 180_000
     micro_compact_keep_last_tools: int = 3
@@ -969,6 +970,7 @@ def _call_openai(
     model: str,
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]],
+    temperature: Optional[float] = None,
 ) -> Any:
     if client is None:
         raise RuntimeError("OpenAI client unavailable; set OPENAI_API_KEY or use litellm/ models.")
@@ -976,6 +978,8 @@ def _call_openai(
         "model": model,
         "messages": messages,
     }
+    if temperature is not None:
+        payload["temperature"] = temperature
     if tools is not None:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -987,6 +991,7 @@ def _stream_openai_message(
     model: str,
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]],
+    temperature: Optional[float] = None,
 ) -> Dict[str, Any]:
     if client is None:
         raise RuntimeError("OpenAI client unavailable; set OPENAI_API_KEY or use litellm/ models.")
@@ -995,6 +1000,8 @@ def _stream_openai_message(
         "messages": messages,
         "stream": True,
     }
+    if temperature is not None:
+        payload["temperature"] = temperature
     if tools is not None:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -1050,6 +1057,7 @@ def _call_litellm(
     model: str,
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]],
+    temperature: Optional[float] = None,
 ) -> Any:
     try:
         import litellm
@@ -1059,6 +1067,8 @@ def _call_litellm(
         "model": _litellm_model_name(model),
         "messages": messages,
     }
+    if temperature is not None:
+        payload["temperature"] = temperature
     if tools is not None:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -1079,8 +1089,8 @@ async def _model_call(
 ) -> Any:
     def _dispatch(model: str) -> Any:
         if _is_litellm_model(model):
-            return _call_litellm(model, messages, tools)
-        return _call_openai(client, model, messages, tools)
+            return _call_litellm(model, messages, tools, config.temperature)
+        return _call_openai(client, model, messages, tools, config.temperature)
 
     try:
         return _dispatch(config.model)
@@ -1170,7 +1180,13 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
                     response = await _model_call(client, config, call_messages, tools)
                     message = _get_message(response)
                 else:
-                    message = _stream_openai_message(client, config.model, call_messages, tools)
+                    message = _stream_openai_message(
+                        client,
+                        config.model,
+                        call_messages,
+                        tools,
+                        config.temperature,
+                    )
                     streamed_openai = True
             except Exception:
                 if config.fallback_model:
@@ -1246,6 +1262,15 @@ def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
     except Exception as exc:
         raise RuntimeError(f"claude-agent-sdk package required: {exc}") from exc
 
+    def _maybe_set_option(options: Any, name: str, value: Any) -> None:
+        if value is None:
+            return
+        if hasattr(options, name):
+            try:
+                setattr(options, name, value)
+            except Exception:
+                return
+
     options = ClaudeAgentOptions()
     options.model = config.model or None
     options.fallback_model = config.fallback_model or None
@@ -1262,6 +1287,7 @@ def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
         context.permissions.auto_approve,
     )
     options.include_partial_messages = bool(config.claude_sdk_stream)
+    _maybe_set_option(options, "temperature", config.temperature)
 
     tools_preset = config.claude_sdk_tools_preset
     if not tools_preset and config.claude_sdk_preset:

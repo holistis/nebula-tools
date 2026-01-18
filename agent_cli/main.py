@@ -21,13 +21,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("OPENAI_MODEL", "gpt-5.2"),
+        default=None,
         help="Model name (use litellm/<provider>/<model> for LiteLLM)",
     )
     parser.add_argument(
         "--fallback-model",
         default=os.environ.get("OPENAI_FALLBACK_MODEL", "gpt-5-mini"),
         help="Fallback model name",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature (optional)",
     )
     parser.add_argument(
         "--permission-mode",
@@ -168,6 +174,9 @@ def _load_json_value(value: str | None) -> object | None:
 
 async def main() -> None:
     args = parse_args()
+    resolved_model = args.model or os.environ.get("OPENAI_MODEL")
+    if not resolved_model:
+        resolved_model = "claude-opus-4-5-20251101" if args.backend == "claude-sdk" else "gpt-5.2"
     root = Path(args.root).resolve()
     perms = PermissionState(mode=args.permission_mode, auto_approve=args.auto_approve)
     context = AppContext(root_dir=root, permissions=perms)
@@ -187,8 +196,9 @@ async def main() -> None:
     mcp_clients = mcp_clients_raw if isinstance(mcp_clients_raw, list) else None
     config = LoopConfig(
         backend=args.backend,
-        model=args.model,
+        model=resolved_model,
         fallback_model=args.fallback_model,
+        temperature=args.temperature,
         tool_log_path=args.tool_log,
         tool_log_max_chars=args.tool_log_max_chars,
         trace_log_path=args.trace_log,
