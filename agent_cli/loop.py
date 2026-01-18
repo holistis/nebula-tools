@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -28,6 +29,8 @@ from .tools import RAW_TOOL_MAP
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.2")
 SYSTEM_REMINDER_RE = re.compile(r"^<system-reminder>\\n?([\\s\\S]*?)\\n?</system-reminder>$")
 SYSTEM_REMINDER_STRIP_RE = re.compile(r"<system-reminder>[\\s\\S]*?</system-reminder>")
+_TRANSCRIPT_META_CACHE: Dict[str, Dict[str, Any]] = {}
+_SUBAGENT_TOOL_MAP_CACHE: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 @dataclass
@@ -386,6 +389,198 @@ def _hook_value(obj: Any, key: str) -> Any:
     return getattr(obj, key, None)
 
 
+def _infer_agent_id_from_path(path_value: Any) -> Optional[str]:
+    if not isinstance(path_value, str) or not path_value:
+        return None
+    name = Path(path_value).name
+    if name.startswith("agent-") and name.endswith(".jsonl"):
+        return name[len("agent-") : -len(".jsonl")]
+    return None
+
+
+def _infer_subagent_label(prompt: str) -> Optional[str]:
+    if not isinstance(prompt, str):
+        return None
+    text = prompt.strip()
+    if not text:
+        return None
+    first = text.split()[0].strip(":,-")
+    if not first:
+        return None
+    if len(first) > 24:
+        return None
+    if not re.match(r"^[A-Za-z][A-Za-z0-9_-]*$", first):
+        return None
+    return first
+
+
+def _load_subagent_meta_from_transcript(path_value: Any, max_chars: int) -> Dict[str, Any]:
+    if not isinstance(path_value, str) or not path_value:
+        return {}
+    if path_value in _TRANSCRIPT_META_CACHE:
+        return _TRANSCRIPT_META_CACHE[path_value]
+    meta: Dict[str, Any] = {}
+    try:
+        path = Path(path_value).expanduser()
+        if not path.exists():
+            _TRANSCRIPT_META_CACHE[path_value] = meta
+            return meta
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("type") != "user":
+                    continue
+                message = obj.get("message", {}) if isinstance(obj.get("message"), dict) else {}
+                content = message.get("content")
+                prompt = ""
+                if isinstance(content, str):
+                    prompt = content.strip()
+                elif isinstance(content, list):
+                    parts: List[str] = []
+                    for part in content:
+                        if isinstance(part, str):
+                            parts.append(part)
+                        elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                            parts.append(part.get("text"))
+                    prompt = "\n".join(p.strip() for p in parts if p.strip())
+                if prompt:
+                    meta["subagent_prompt"] = _truncate_log_value(prompt, max_chars)
+                    label = _infer_subagent_label(prompt)
+                    if label:
+                        meta["subagent_type"] = label
+                break
+    except Exception:
+        pass
+    _TRANSCRIPT_META_CACHE[path_value] = meta
+    return meta
+
+
+def _augment_hook_meta_from_transcript(meta: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+    transcript_path = meta.get("agent_transcript_path") or meta.get("transcript_path")
+    if not isinstance(transcript_path, str) or not transcript_path:
+        return meta
+    tool_use_id = meta.get("tool_use_id") or meta.get("tool_call_id")
+    agent_id = _infer_agent_id_from_path(transcript_path)
+    if agent_id and "agent_id" not in meta:
+        meta["agent_id"] = agent_id
+    if tool_use_id and "subagents" not in transcript_path:
+        subagent_meta = _resolve_subagent_meta_from_tool_use(
+            transcript_path,
+            str(tool_use_id),
+            max_chars,
+        )
+        for key, value in subagent_meta.items():
+            if key not in meta and value is not None:
+                meta[key] = value
+
+    if "subagents" not in transcript_path and not agent_id:
+        return meta
+    transcript_meta = _load_subagent_meta_from_transcript(transcript_path, max_chars)
+    for key, value in transcript_meta.items():
+        if key not in meta and value is not None:
+            meta[key] = value
+    return meta
+
+
+def _build_subagent_tool_map(subagents_dir: Path, max_chars: int) -> Dict[str, Dict[str, Any]]:
+    tool_map: Dict[str, Dict[str, Any]] = {}
+    if not subagents_dir.exists():
+        return tool_map
+
+    for entry in sorted(subagents_dir.glob("agent-*.jsonl")):
+        agent_id = _infer_agent_id_from_path(str(entry)) or ""
+        subagent_meta = _load_subagent_meta_from_transcript(str(entry), max_chars)
+        subagent_meta = {**subagent_meta, "agent_id": agent_id, "agent_transcript_path": str(entry)}
+        try:
+            with entry.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    msg = obj.get("message")
+                    if not isinstance(msg, dict):
+                        continue
+                    content = msg.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") != "tool_use":
+                            continue
+                        tool_id = part.get("id")
+                        if isinstance(tool_id, str) and tool_id:
+                            tool_map.setdefault(tool_id, dict(subagent_meta))
+        except Exception:
+            continue
+    return tool_map
+
+
+def _resolve_subagent_meta_from_tool_use(
+    transcript_path: str,
+    tool_use_id: str,
+    max_chars: int,
+) -> Dict[str, Any]:
+    if not tool_use_id:
+        return {}
+    transcript = Path(transcript_path).expanduser()
+    session_root = transcript.with_suffix("")
+    if not session_root.exists():
+        session_root = transcript.parent
+    subagents_dir = session_root / "subagents"
+    cache_key = str(session_root)
+    tool_map = _SUBAGENT_TOOL_MAP_CACHE.get(cache_key)
+    if tool_map is None or tool_use_id not in tool_map:
+        tool_map = _build_subagent_tool_map(subagents_dir, max_chars)
+        _SUBAGENT_TOOL_MAP_CACHE[cache_key] = tool_map
+    return tool_map.get(tool_use_id, {})
+
+
+def _extract_hook_meta(hook_input: Any) -> Dict[str, Any]:
+    if hook_input is None:
+        return {}
+    meta: Dict[str, Any] = {}
+    for key in (
+        "session_id",
+        "transcript_path",
+        "cwd",
+        "permission_mode",
+        "hook_event_name",
+        "agent_id",
+        "agent_transcript_path",
+        "tool_call_id",
+        "tool_use_id",
+        "parent_tool_use_id",
+    ):
+        value = _hook_value(hook_input, key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        meta[key] = value
+
+    if "agent_id" not in meta:
+        inferred = _infer_agent_id_from_path(meta.get("agent_transcript_path"))
+        if not inferred:
+            inferred = _infer_agent_id_from_path(meta.get("transcript_path"))
+        if inferred:
+            meta["agent_id"] = inferred
+
+    if "cwd" in meta and "tool_cwd" not in meta:
+        meta["tool_cwd"] = meta["cwd"]
+    return meta
+
+
 def _extract_system_reminder(text: str) -> Optional[str]:
     if not isinstance(text, str):
         return None
@@ -607,6 +802,27 @@ async def _execute_tools(
     for group in _tool_groups(calls):
         if len(group) == 1:
             call = group[0]
+            _append_tool_log(
+                config,
+                {
+                    "type": "tool_call",
+                    "tool": call["name"],
+                    "tool_call_id": call["id"],
+                    "args": call.get("args", {}),
+                    "raw_arguments": call.get("raw_arguments"),
+                    "timestamp": time.time(),
+                },
+            )
+            _append_trace_log(
+                config,
+                {
+                    "type": "tool_call",
+                    "tool": call["name"],
+                    "tool_call_id": call["id"],
+                    "timestamp": time.time(),
+                    "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
+                },
+            )
             start = time.time()
             result = await _run_tool(ctx, call["name"], call["args"])
             duration_ms = int((time.time() - start) * 1000)
@@ -624,10 +840,10 @@ async def _execute_tools(
             _append_tool_log(
                 config,
                 {
-                    "type": "tool_call",
+                    "type": "tool_result",
                     "tool": call["name"],
                     "tool_call_id": call["id"],
-                    "args": call["args"],
+                    "args": call.get("args", {}),
                     "raw_arguments": call.get("raw_arguments"),
                     "duration_ms": duration_ms,
                     "result": _truncate_log_value(result_text, config.tool_log_max_chars),
@@ -664,6 +880,28 @@ async def _execute_tools(
             )
         else:
             starts = {call["id"]: time.time() for call in group}
+            for call in group:
+                _append_tool_log(
+                    config,
+                    {
+                        "type": "tool_call",
+                        "tool": call["name"],
+                        "tool_call_id": call["id"],
+                        "args": call.get("args", {}),
+                        "raw_arguments": call.get("raw_arguments"),
+                        "timestamp": time.time(),
+                    },
+                )
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "tool_call",
+                        "tool": call["name"],
+                        "tool_call_id": call["id"],
+                        "timestamp": time.time(),
+                        "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
+                    },
+                )
             tasks = [
                 _run_tool(ctx, call["name"], call["args"])
                 for call in group
@@ -685,10 +923,10 @@ async def _execute_tools(
                 _append_tool_log(
                     config,
                     {
-                        "type": "tool_call",
+                        "type": "tool_result",
                         "tool": call["name"],
                         "tool_call_id": call["id"],
-                        "args": call["args"],
+                        "args": call.get("args", {}),
                         "raw_arguments": call.get("raw_arguments"),
                         "duration_ms": duration_ms,
                         "result": _truncate_log_value(result_text, config.tool_log_max_chars),
@@ -742,6 +980,70 @@ def _call_openai(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
     return client.chat.completions.create(**payload)
+
+
+def _stream_openai_message(
+    client: Any,
+    model: str,
+    messages: List[Dict[str, Any]],
+    tools: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    if client is None:
+        raise RuntimeError("OpenAI client unavailable; set OPENAI_API_KEY or use litellm/ models.")
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+    }
+    if tools is not None:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    stream = client.chat.completions.create(**payload)
+    content_parts: List[str] = []
+    tool_calls: Dict[int, Dict[str, Any]] = {}
+    for chunk in stream:
+        try:
+            choice = chunk.choices[0]
+        except Exception:
+            continue
+        delta = getattr(choice, "delta", None) or {}
+        text = getattr(delta, "content", None) if not isinstance(delta, dict) else delta.get("content")
+        if text:
+            content_parts.append(text)
+            print(text, end="", flush=True)
+        delta_tool_calls = getattr(delta, "tool_calls", None) if not isinstance(delta, dict) else delta.get("tool_calls")
+        if delta_tool_calls:
+            for call in delta_tool_calls:
+                if isinstance(call, dict):
+                    idx = call.get("index", 0)
+                    entry = tool_calls.setdefault(idx, {"id": "", "function": {"name": None, "arguments": ""}})
+                    if call.get("id"):
+                        entry["id"] = call["id"]
+                    func = call.get("function") or {}
+                    if func.get("name"):
+                        entry["function"]["name"] = func["name"]
+                    if func.get("arguments"):
+                        entry["function"]["arguments"] += func["arguments"]
+                else:
+                    idx = getattr(call, "index", 0)
+                    entry = tool_calls.setdefault(idx, {"id": "", "function": {"name": None, "arguments": ""}})
+                    call_id = getattr(call, "id", None)
+                    if call_id:
+                        entry["id"] = call_id
+                    func = getattr(call, "function", None)
+                    if func is not None:
+                        name = getattr(func, "name", None)
+                        if name:
+                            entry["function"]["name"] = name
+                        args = getattr(func, "arguments", None)
+                        if args:
+                            entry["function"]["arguments"] += args
+    ordered_calls = [tool_calls[idx] for idx in sorted(tool_calls.keys())]
+    return {
+        "role": "assistant",
+        "content": "".join(content_parts),
+        "tool_calls": ordered_calls if ordered_calls else None,
+    }
 
 
 def _call_litellm(
@@ -862,8 +1164,20 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
                     "tools": _truncate_nested(tools, config.trace_log_max_chars),
                 },
             )
-            response = await _model_call(client, config, call_messages, tools)
-            message = _get_message(response)
+            streamed_openai = False
+            try:
+                if _is_litellm_model(config.model):
+                    response = await _model_call(client, config, call_messages, tools)
+                    message = _get_message(response)
+                else:
+                    message = _stream_openai_message(client, config.model, call_messages, tools)
+                    streamed_openai = True
+            except Exception:
+                if config.fallback_model:
+                    response = await _model_call(client, config, call_messages, tools)
+                    message = _get_message(response)
+                else:
+                    raise
             tool_calls = _parse_tool_calls(message)
             _append_trace_log(
                 config,
@@ -909,7 +1223,10 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
                             "content": _truncate_log_value(content, config.trace_log_max_chars),
                         },
                     )
-                    print(content)
+                    if not streamed_openai:
+                        print(content)
+                    else:
+                        print()
                 break
 
             tool_results = await _execute_tools(context, config, tool_calls)
@@ -933,6 +1250,9 @@ def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
     options.model = config.model or None
     options.fallback_model = config.fallback_model or None
     options.cwd = str(context.root_dir)
+    # Ensure Claude Code trusts the sandbox root and loads normal settings
+    options.add_dirs = [str(context.root_dir)]
+    options.setting_sources = ["user", "project", "local"]
     if config.claude_sdk_cli_path:
         options.cli_path = str(Path(config.claude_sdk_cli_path).expanduser())
     if config.claude_sdk_settings:
@@ -992,6 +1312,8 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
         async def _log_pre_tool_use(hook_input: Any, _output: Any, _ctx: Any) -> Dict[str, Any]:
             tool_name = _hook_value(hook_input, "tool_name")
             tool_input = _hook_value(hook_input, "tool_input")
+            hook_meta = _extract_hook_meta(hook_input)
+            hook_meta = _augment_hook_meta_from_transcript(hook_meta, config.trace_log_max_chars)
             reminder = None
             if isinstance(tool_input, str):
                 reminder = _extract_system_reminder(tool_input)
@@ -1010,6 +1332,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                     "backend": "claude-sdk",
                     "tool": tool_name,
                     "args": _truncate_nested(tool_input, config.trace_log_max_chars),
+                    **hook_meta,
                 },
             )
             _append_tool_log(
@@ -1019,6 +1342,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                     "tool": tool_name,
                     "args": _truncate_nested(tool_input, config.tool_log_max_chars),
                     "timestamp": time.time(),
+                    **hook_meta,
                 },
             )
             return {}
@@ -1027,6 +1351,8 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             tool_name = _hook_value(hook_input, "tool_name")
             tool_input = _hook_value(hook_input, "tool_input")
             tool_response = _hook_value(hook_input, "tool_response")
+            hook_meta = _extract_hook_meta(hook_input)
+            hook_meta = _augment_hook_meta_from_transcript(hook_meta, config.trace_log_max_chars)
             reminder = None
             stripped_result = None
             if isinstance(tool_response, str):
@@ -1051,6 +1377,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                     "result_stripped": _truncate_log_value(stripped_result, config.trace_log_max_chars)
                     if isinstance(stripped_result, str) and stripped_result != tool_response
                     else None,
+                    **hook_meta,
                 },
             )
             _append_tool_log(
@@ -1064,6 +1391,29 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                     if isinstance(stripped_result, str) and stripped_result != tool_response
                     else None,
                     "timestamp": time.time(),
+                    **hook_meta,
+                },
+            )
+            return {}
+
+        async def _log_subagent_stop(hook_input: Any, _output: Any, _ctx: Any) -> Dict[str, Any]:
+            hook_meta = _extract_hook_meta(hook_input)
+            hook_meta = _augment_hook_meta_from_transcript(hook_meta, config.trace_log_max_chars)
+            _append_trace_log(
+                config,
+                {
+                    "type": "subagent_stop",
+                    "timestamp": time.time(),
+                    "backend": "claude-sdk",
+                    **hook_meta,
+                },
+            )
+            _append_tool_log(
+                config,
+                {
+                    "type": "subagent_stop",
+                    "timestamp": time.time(),
+                    **hook_meta,
                 },
             )
             return {}
@@ -1071,6 +1421,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
         options.hooks = {
             "PreToolUse": [HookMatcher(matcher=None, hooks=[_log_pre_tool_use])],
             "PostToolUse": [HookMatcher(matcher=None, hooks=[_log_post_tool_use])],
+            "SubagentStop": [HookMatcher(matcher=None, hooks=[_log_subagent_stop])],
         }
     if use_preset and (config.custom_system_prompt or config.append_system_prompt):
         _append_trace_log(
@@ -1098,6 +1449,25 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
         },
     )
 
+    interrupt_event = asyncio.Event()
+    interrupt_state = {"inflight": False}
+    loop = asyncio.get_running_loop()
+    previous_handler = None
+
+    def _handle_sigint() -> None:
+        if interrupt_state["inflight"]:
+            interrupt_event.set()
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, _handle_sigint)
+    except (NotImplementedError, RuntimeError):
+        try:
+            previous_handler = signal.getsignal(signal.SIGINT)
+            signal.signal(signal.SIGINT, lambda *_args: _handle_sigint())
+        except Exception:
+            previous_handler = None
+
+    pending_interruption: Optional[str] = None
     async with ClaudeSDKClient(options) as client:
         while True:
             try:
@@ -1111,6 +1481,17 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                 break
 
             prompt = _build_user_prompt(user_input, context, include_reminders=not use_preset)
+            if pending_interruption:
+                truncated = pending_interruption
+                if len(truncated) > 8000:
+                    truncated = truncated[:8000].rstrip() + "\n...[truncated]"
+                resume_note = _wrap_system_reminder(
+                    "Previous response was interrupted by the user. Continue from where it left off.\n"
+                    "Do NOT repeat the partial response. Resume immediately after it.\n\n"
+                    f"PARTIAL RESPONSE:\n{truncated}"
+                )
+                prompt = resume_note + "\n\n" + prompt
+                pending_interruption = None
             _append_trace_log(
                 config,
                 {
@@ -1131,9 +1512,16 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                 streamed_text = ""
                 streamed_any = False
                 content = ""
-                try:
+                last_session_id: Optional[str] = None
+                interrupted = False
+                interrupt_state["inflight"] = True
+                interrupt_event.clear()
+
+                async def _consume_response() -> None:
+                    nonlocal last_session_id, streamed_any, streamed_text, output_parts
                     async for msg in client.receive_response():
                         if isinstance(msg, types.StreamEvent):
+                            last_session_id = msg.session_id or last_session_id
                             delta_text = _extract_stream_text(msg.event)
                             if delta_text:
                                 streamed_any = True
@@ -1145,6 +1533,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                                 if text:
                                     output_parts.append(text)
                         if isinstance(msg, types.ResultMessage):
+                            last_session_id = msg.session_id or last_session_id
                             _append_trace_log(
                                 config,
                                 {
@@ -1157,6 +1546,44 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                                     "total_cost_usd": msg.total_cost_usd,
                                 },
                             )
+
+                receive_task = asyncio.create_task(_consume_response())
+                interrupt_task = asyncio.create_task(interrupt_event.wait())
+                try:
+                    done, pending = await asyncio.wait(
+                        {receive_task, interrupt_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if interrupt_task in done:
+                        interrupted = True
+                        try:
+                            await client.interrupt()
+                        except Exception as exc:
+                            _append_trace_log(
+                                config,
+                                {
+                                    "type": "warning",
+                                    "timestamp": time.time(),
+                                    "backend": "claude-sdk",
+                                    "message": f"Claude SDK interrupt error: {exc}",
+                                },
+                            )
+                        receive_task.cancel()
+                        await asyncio.gather(receive_task, return_exceptions=True)
+                        _append_trace_log(
+                            config,
+                            {
+                                "type": "interrupted",
+                                "timestamp": time.time(),
+                                "backend": "claude-sdk",
+                                "session_id": last_session_id,
+                            },
+                        )
+                        if streamed_any:
+                            print()
+                    else:
+                        interrupt_task.cancel()
+                        await asyncio.gather(interrupt_task, return_exceptions=True)
                 except Exception as exc:
                     _append_trace_log(
                         config,
@@ -1167,8 +1594,14 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                             "message": f"Claude SDK receive error: {exc}",
                         },
                     )
+                finally:
+                    interrupt_state["inflight"] = False
 
                 content = streamed_text.strip() if streamed_any else "".join(output_parts).strip()
+                if interrupted:
+                    if content:
+                        pending_interruption = content
+                    break
                 should_follow = auto_continue and _attempt == 0 and _should_auto_continue(content)
                 if should_follow:
                     _append_trace_log(
@@ -1193,11 +1626,22 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                             "timestamp": time.time(),
                             "backend": "claude-sdk",
                             "content": _truncate_log_value(content, config.trace_log_max_chars),
+                            "session_id": last_session_id,
                         },
                     )
                     if not streamed_any:
                         print(content)
                 break
+    if previous_handler is not None:
+        try:
+            signal.signal(signal.SIGINT, previous_handler)
+        except Exception:
+            pass
+    else:
+        try:
+            loop.remove_signal_handler(signal.SIGINT)
+        except Exception:
+            pass
 
 
 async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:

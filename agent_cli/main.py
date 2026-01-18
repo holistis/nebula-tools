@@ -217,7 +217,10 @@ async def main() -> None:
         or os.environ.get("CLAUDE_STRIP_SYSTEM_REMINDERS", "").strip().lower()
         in {"1", "true", "yes"},
     )
-    await run_cli_loop(context, config)
+    try:
+        await run_cli_loop(context, config)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        return
 
 
 if __name__ == "__main__":
