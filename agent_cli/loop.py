@@ -13,6 +13,7 @@ import re
 from agents import RunContextWrapper
 
 from .permissions import AppContext, SAFE_TOOLS
+from .policy import DefaultPolicy, Policy, PolicyConfig
 from .prompt_loader import (
     load_system_prompt,
     load_compaction_prompt,
@@ -65,6 +66,7 @@ class LoopConfig:
     attribution_header: Optional[str] = None
     mcp_clients: Optional[List[Dict[str, Any]]] = None
     mcp_instructions: Optional[str] = None
+    policy: Optional[Policy] = None
 
 
 @dataclass
@@ -158,10 +160,10 @@ def _user_context_reminder(user_context: Dict[str, str]) -> str:
     )
 
 
-def _build_user_prompt(user_input: str, context: AppContext, include_reminders: bool) -> str:
+def _build_user_prompt(user_input: str, context: AppContext, include_reminders: bool, policy: Policy) -> str:
     prompt = user_input
     if not include_reminders:
-        return prompt
+        return policy.build_user_prompt(context, prompt)
     if (context.permissions.mode or "").lower() == "plan":
         plan_text = _plan_mode_prompt(context.root_dir)
         if plan_text:
@@ -169,7 +171,7 @@ def _build_user_prompt(user_input: str, context: AppContext, include_reminders: 
     reminder = _user_context_reminder(context.user_context)
     if reminder:
         prompt = reminder + "\n\n" + prompt
-    return prompt
+    return policy.build_user_prompt(context, prompt)
 
 
 def _wrap_system_reminder(text: str) -> str:
@@ -231,11 +233,26 @@ def _build_system_prompt(context: AppContext, config: LoopConfig) -> str:
         system_blocks.append(append)
     mcp_cli = load_mcp_cli_block()
     parts = [p for p in [attribution, base_prompt, *system_blocks, mcp_cli] if p]
-    return "\n\n".join(parts).strip()
+    system_prompt = "\n\n".join(parts).strip()
+    policy = config.policy or DefaultPolicy(PolicyConfig(
+        max_context_chars=config.max_context_chars,
+        auto_compact_chars=config.auto_compact_chars,
+        micro_compact_keep_last_tools=config.micro_compact_keep_last_tools,
+        micro_tool_result_chars=config.micro_tool_result_chars,
+        enable_compaction=config.enable_compaction,
+    ))
+    return policy.build_system_prompt(context, system_prompt)
 
 
 def _micro_compact(state: LoopState, config: LoopConfig) -> Optional[Dict[str, Any]]:
-    if _estimate_chars(state.messages) <= config.max_context_chars:
+    policy = config.policy or DefaultPolicy(PolicyConfig(
+        max_context_chars=config.max_context_chars,
+        auto_compact_chars=config.auto_compact_chars,
+        micro_compact_keep_last_tools=config.micro_compact_keep_last_tools,
+        micro_tool_result_chars=config.micro_tool_result_chars,
+        enable_compaction=config.enable_compaction,
+    ))
+    if not policy.should_micro_compact(_estimate_chars(state.messages)):
         return None
     tool_messages = [m for m in state.messages if m.get("role") == "tool"]
     if not tool_messages:
@@ -258,9 +275,16 @@ def _micro_compact(state: LoopState, config: LoopConfig) -> Optional[Dict[str, A
 
 
 def _should_auto_compact(state: LoopState, config: LoopConfig) -> bool:
-    if not config.enable_compaction:
+    policy = config.policy or DefaultPolicy(PolicyConfig(
+        max_context_chars=config.max_context_chars,
+        auto_compact_chars=config.auto_compact_chars,
+        micro_compact_keep_last_tools=config.micro_compact_keep_last_tools,
+        micro_tool_result_chars=config.micro_tool_result_chars,
+        enable_compaction=config.enable_compaction,
+    ))
+    if not policy.allow_compaction():
         return False
-    return _estimate_chars(state.messages) >= config.auto_compact_chars
+    return policy.should_auto_compact(_estimate_chars(state.messages))
 
 
 def _compaction_prompts() -> Tuple[str, str]:
@@ -799,10 +823,18 @@ async def _execute_tools(
     config: LoopConfig,
     calls: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+    policy = config.policy or DefaultPolicy(PolicyConfig(
+        max_context_chars=config.max_context_chars,
+        auto_compact_chars=config.auto_compact_chars,
+        micro_compact_keep_last_tools=config.micro_compact_keep_last_tools,
+        micro_tool_result_chars=config.micro_tool_result_chars,
+        enable_compaction=config.enable_compaction,
+    ))
     results: List[Dict[str, Any]] = []
     for group in _tool_groups(calls):
         if len(group) == 1:
             call = group[0]
+            policy.before_tool(call["name"], call.get("args", {}))
             _append_tool_log(
                 config,
                 {
@@ -826,6 +858,7 @@ async def _execute_tools(
             )
             start = time.time()
             result = await _run_tool(ctx, call["name"], call["args"])
+            policy.after_tool(call["name"], result)
             duration_ms = int((time.time() - start) * 1000)
             result_text = stringify_tool_result(result)
             reminder = _extract_system_reminder(result_text)
@@ -882,6 +915,7 @@ async def _execute_tools(
         else:
             starts = {call["id"]: time.time() for call in group}
             for call in group:
+                policy.before_tool(call["name"], call.get("args", {}))
                 _append_tool_log(
                     config,
                     {
@@ -909,6 +943,7 @@ async def _execute_tools(
             ]
             group_results = await asyncio.gather(*tasks)
             for call, result in zip(group, group_results):
+                policy.after_tool(call["name"], result)
                 duration_ms = int((time.time() - starts[call["id"]]) * 1000)
                 result_text = stringify_tool_result(result)
                 reminder = _extract_system_reminder(result_text)
@@ -1108,6 +1143,13 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
 
     client = OpenAI() if _needs_openai_client(config) else None
     tools = build_openai_tools()
+    policy = config.policy or DefaultPolicy(PolicyConfig(
+        max_context_chars=config.max_context_chars,
+        auto_compact_chars=config.auto_compact_chars,
+        micro_compact_keep_last_tools=config.micro_compact_keep_last_tools,
+        micro_tool_result_chars=config.micro_tool_result_chars,
+        enable_compaction=config.enable_compaction,
+    ))
     system_prompt = _build_system_prompt(context, config)
     system_prompt = _append_system_context(system_prompt, context.system_context)
     _append_trace_log(
@@ -1506,7 +1548,14 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             if user_input in {"/quit", "/exit"}:
                 break
 
-            prompt = _build_user_prompt(user_input, context, include_reminders=not use_preset)
+            policy = config.policy or DefaultPolicy(PolicyConfig(
+                max_context_chars=config.max_context_chars,
+                auto_compact_chars=config.auto_compact_chars,
+                micro_compact_keep_last_tools=config.micro_compact_keep_last_tools,
+                micro_tool_result_chars=config.micro_tool_result_chars,
+                enable_compaction=config.enable_compaction,
+            ))
+            prompt = _build_user_prompt(user_input, context, include_reminders=not use_preset, policy=policy)
             if pending_interruption:
                 truncated = pending_interruption
                 if len(truncated) > 8000:
