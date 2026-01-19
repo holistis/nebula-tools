@@ -134,12 +134,19 @@ def main() -> None:
     parser.add_argument("--claude-preset", default="claude_code")
     parser.add_argument("--claude-tools-preset", default="claude_code")
     parser.add_argument("--baseline-dir", default=None, help="Override baseline output directory")
+    parser.add_argument("--single-line-prompt", action="store_true", help="Send prompt as a single input line")
+    parser.add_argument("--claude-sdk-stream", action="store_true", help="Enable Claude SDK stream logging")
+    parser.add_argument("--claude-sdk-hooks", action="store_true", help="Enable Claude SDK tool hooks")
+    parser.add_argument("--claude-sdk-compat", action="store_true", help="Enable Claude SDK compat mode")
+    parser.add_argument("--claude-sdk-permission-callback", action="store_true", help="Enable Claude SDK permission callback")
     args = parser.parse_args()
 
     if not args.record and not args.compare:
         args.record = True
 
     prompt = PROMPT_PATH.read_text(encoding="utf-8")
+    if args.single_line_prompt:
+        prompt = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
 
     with tempfile.TemporaryDirectory(prefix="agent-cli-baseline-") as tmpdir:
         root_dir = Path(tmpdir) / "project"
@@ -170,6 +177,15 @@ def main() -> None:
             cmd_args += ["--claude-sdk-preset", args.claude_preset]
             if args.claude_tools_preset:
                 cmd_args += ["--claude-sdk-tools-preset", args.claude_tools_preset]
+        if args.backend == "claude-sdk":
+            if args.claude_sdk_stream:
+                cmd_args += ["--claude-sdk-stream"]
+            if args.claude_sdk_hooks:
+                cmd_args += ["--claude-sdk-hooks"]
+            if args.claude_sdk_compat:
+                cmd_args += ["--claude-sdk-compat"]
+            if args.claude_sdk_permission_callback:
+                cmd_args += ["--claude-sdk-permission-callback"]
 
         result = _run_agent_cli(root_dir, prompt, cmd_args)
         if result.returncode != 0:
