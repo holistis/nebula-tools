@@ -1,0 +1,34 @@
+{"type": "system_prompt", "backend": "claude-sdk", "model": "claude-opus-4-5-20251101", "fallback_model": "gpt-5-mini", "content": "You are a Claude agent, built on Anthropic's Claude Agent SDK.\n\n\"\n  and\n  \"\n\nIMPORTANT: Always use the TodoWrite tool to plan and track tasks throughout the conversation.\n\n# Code References\nWhen referencing specific functions or pieces of code include the pattern `file_path:line_number` to allow the user to easily navigate to the source code location.\n<example>\nuser: Where are errors from the client handled?\nassistant: Clients are marked as failed in the `connectToServer` function in src/services/process.ts:712.\n</example>\n4) Environment block (fA0) -- see below\n5) Output Style block (if configured)\n6) MCP Server Instructions block (FK1) -- see below\n7) Scratchpad block (wK1) -- see below\n8) Reasoning effort block (NK1) -- see below\n\nHere is useful information about the environment you are running in:\n<env>\nWorking directory: /private<ROOT>\nIs directory a git repo: No\nPlatform: darwin\nOS Version: Darwin 25.2.0\nToday's date: 2026-01-18\n</env>\nYou are powered by the model named unknown. The exact model ID is unknown.\nAssistant knowledge cutoff is January 2025.   [only for certain models]\n<claude_background_info>\nThe most recent frontier Claude model is Claude Opus 4.5 (model ID: 'claude-opus-4-5-20251101').\n</claude_background_info>\n\nNotes:\n- Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.\n- In your final response always share relevant file names and code snippets. Any file paths you return in your response MUST be absolute. Do NOT use relative paths.\n- For clear communication with the user the assistant MUST avoid using emojis."}
+{"type": "user_input", "backend": "claude-sdk", "content": "You are reviewing the baseline project in the current directory. Do NOT modify any files.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "Tasks (perform in order):", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "1) Use the LS tool to list the top-level contents.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "2) Use the Glob tool to list all Python files under src/.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "3) Use the Read tool to read README.md and docs/ARCHITECTURE.md.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "4) Use the Read tool to read src/app.py and src/utils.py.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "5) Use the Grep tool to find TODO in src/.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "Then provide:", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "- A short summary of what the project does.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "- A bullet list of the files you read.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}
+{"type": "user_input", "backend": "claude-sdk", "content": "- The TODO items you found.", "expanded_prompt": null}
+{"type": "result", "backend": "claude-sdk", "is_error": false}
+{"type": "assistant_output", "backend": "claude-sdk"}

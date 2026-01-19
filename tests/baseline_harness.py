@@ -133,6 +133,7 @@ def main() -> None:
     parser.add_argument("--compare", action="store_true", help="Compare against recorded baseline")
     parser.add_argument("--claude-preset", default="claude_code")
     parser.add_argument("--claude-tools-preset", default="claude_code")
+    parser.add_argument("--baseline-dir", default=None, help="Override baseline output directory")
     args = parser.parse_args()
 
     if not args.record and not args.compare:
@@ -183,7 +184,7 @@ def main() -> None:
         norm_tool_entries = [_normalize_value(entry, root_token) for entry in raw_tool_entries]
         norm_trace_entries = [_normalize_entry(entry, root_token, args.backend) for entry in raw_trace_entries]
 
-        backend_dir = BASELINE_DIR / args.backend
+        backend_dir = Path(args.baseline_dir).expanduser() if args.baseline_dir else (BASELINE_DIR / args.backend)
         tool_out = backend_dir / "tool.jsonl"
         trace_out = backend_dir / "trace.jsonl"
 
