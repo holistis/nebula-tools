@@ -21,7 +21,9 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "tests" / "fixtures" / "baseline_project"
+SANDBOX_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "sandbox_snapshot"
 PROMPT_PATH = ROOT / "tests" / "fixtures" / "baseline_prompt.txt"
+SANDBOX_PROMPT_PATH = ROOT / "tests" / "fixtures" / "sandbox_prompt.txt"
 BASELINE_DIR = ROOT / "tests" / "fixtures" / "baseline_runs"
 
 DYNAMIC_KEYS = {
@@ -127,6 +129,7 @@ def _compare_jsonl(current: list[dict[str, Any]], baseline: list[dict[str, Any]]
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run baseline parity harness for agent-cli")
     parser.add_argument("--backend", choices=["openai", "claude-sdk"], default="claude-sdk")
+    parser.add_argument("--scenario", choices=["baseline", "sandbox"], default="sandbox")
     parser.add_argument("--model", default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--record", action="store_true", help="Record baseline output")
@@ -144,13 +147,17 @@ def main() -> None:
     if not args.record and not args.compare:
         args.record = True
 
-    prompt = PROMPT_PATH.read_text(encoding="utf-8")
+    prompt_path = SANDBOX_PROMPT_PATH if args.scenario == "sandbox" else PROMPT_PATH
+    prompt = prompt_path.read_text(encoding="utf-8")
     if args.single_line_prompt:
         prompt = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
 
     with tempfile.TemporaryDirectory(prefix="agent-cli-baseline-") as tmpdir:
         root_dir = Path(tmpdir) / "project"
-        shutil.copytree(FIXTURE_DIR, root_dir)
+        source_dir = SANDBOX_FIXTURE_DIR if args.scenario == "sandbox" else FIXTURE_DIR
+        if not source_dir.exists():
+            raise SystemExit(f"Fixture directory not found: {source_dir}")
+        shutil.copytree(source_dir, root_dir)
 
         tool_log = Path(tmpdir) / "tool.jsonl"
         trace_log = Path(tmpdir) / "trace.jsonl"
@@ -200,7 +207,10 @@ def main() -> None:
         norm_tool_entries = [_normalize_value(entry, root_token) for entry in raw_tool_entries]
         norm_trace_entries = [_normalize_entry(entry, root_token, args.backend) for entry in raw_trace_entries]
 
-        backend_dir = Path(args.baseline_dir).expanduser() if args.baseline_dir else (BASELINE_DIR / args.backend)
+        if args.baseline_dir:
+            backend_dir = Path(args.baseline_dir).expanduser()
+        else:
+            backend_dir = BASELINE_DIR / args.scenario / args.backend
         tool_out = backend_dir / "tool.jsonl"
         trace_out = backend_dir / "trace.jsonl"
 
@@ -212,16 +222,40 @@ def main() -> None:
         if args.compare:
             baseline_tool = [_normalize_value(entry, "<ROOT>") for entry in _load_jsonl(tool_out)]
             baseline_trace = [_normalize_entry(entry, "<ROOT>", args.backend) for entry in _load_jsonl(trace_out)]
+
+            def _tool_names(entries: list[dict[str, Any]]) -> set[str]:
+                return {e.get("tool", "") for e in entries if e.get("type") == "tool_call"}
+
+            current_tools = _tool_names(norm_tool_entries)
+            ask_user_used = "AskUserQuestion" in current_tools
+            requires_write = args.scenario == "sandbox"
+
+            def _has_readish(tools: set[str]) -> bool:
+                return "Read" in tools or "Bash" in tools
+
+            def _has_writeish(tools: set[str]) -> bool:
+                return bool({"Write", "Edit"} & tools)
+
             if args.backend == "openai":
-                def _tool_names(entries: list[dict[str, Any]]) -> set[str]:
-                    return {e.get("tool", "") for e in entries if e.get("type") == "tool_call"}
-                current_tools = _tool_names(norm_tool_entries)
-                required_tools = {"LS", "Glob", "Read", "Grep", "TodoWrite"}
-                tool_ok = required_tools.issubset(current_tools)
-                trace_ok = True
+                if args.scenario == "sandbox":
+                    tool_ok = _has_readish(current_tools) and not ask_user_used
+                    if requires_write:
+                        tool_ok = tool_ok and _has_writeish(current_tools)
+                    trace_ok = True
+                else:
+                    required_tools = {"Glob", "Read", "Grep", "TodoWrite"}
+                    tool_ok = required_tools.issubset(current_tools)
+                    tool_ok = tool_ok and not ask_user_used
+                    trace_ok = True
             else:
-                tool_ok = _compare_jsonl(norm_tool_entries, baseline_tool)
-                trace_ok = _compare_jsonl(norm_trace_entries, baseline_trace)
+                if args.scenario == "sandbox":
+                    tool_ok = _has_readish(current_tools) and not ask_user_used
+                    if requires_write:
+                        tool_ok = tool_ok and _has_writeish(current_tools)
+                    trace_ok = True
+                else:
+                    tool_ok = _compare_jsonl(norm_tool_entries, baseline_tool)
+                    trace_ok = _compare_jsonl(norm_trace_entries, baseline_trace)
             if tool_ok and trace_ok:
                 print("Baseline comparison: OK")
             else:
