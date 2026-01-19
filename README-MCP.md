@@ -12,7 +12,26 @@ cd /path/to/nebula-notebook
 npm run server
 ```
 
-### 2. Configure Claude Code
+### 2. Automated setup (Recommended)
+
+Run the interactive setup script to configure all detected clients:
+
+```bash
+npm run setup-mcp
+```
+
+**Supported tools** (auto-detected):
+- Claude Code
+- Claude Desktop
+- Cursor IDE
+- Gemini CLI
+- Codex CLI
+- VS Code / GitHub Copilot (workspace via `.vscode/mcp.json`)
+- Antigravity (global config if present)
+
+The setup script is idempotent and will skip configs that already contain the correct `nebula-notebook` entry.
+
+### 3. Manual setup (Claude Code example)
 
 Add to your `~/.claude.json`:
 
@@ -37,13 +56,13 @@ Add to your `~/.claude.json`:
 - ✅ For SSH-forwarded servers, use `http://localhost:FORWARDED_PORT`
 - ✅ For direct backend access, use `http://localhost:8000` (or your backend port)
 
-### 3. Restart Claude Code
+### 4. Restart your AI client
 
 After editing the config:
 ```bash
 # In Claude Code terminal
 /exit
-# Then restart Claude Code
+# Then restart your client
 ```
 
 ## Switching Between Nebula Instances

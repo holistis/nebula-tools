@@ -53,7 +53,7 @@ npm run setup-mcp
 ```
 
 **What it does**:
-- 🔍 Detects installed AI tools (Claude Code, Claude Desktop, Cursor, Gemini CLI, Codex CLI)
+- 🔍 Detects installed AI tools (Claude Code, Claude Desktop, Cursor, Gemini CLI, Codex CLI, VS Code / GitHub Copilot, Antigravity)
 - 💾 Creates timestamped backups of existing configs
 - ⚙️ Configures Nebula MCP server for each detected tool
 - ✅ Shows verification commands for each tool

@@ -9,6 +9,8 @@
  * - Cursor IDE
  * - Gemini CLI
  * - Codex CLI (OpenAI)
+ * - VS Code / GitHub Copilot (workspace)
+ * - Antigravity
  */
 
 import fs from 'fs';
@@ -31,10 +33,21 @@ const CONFIG_PATHS = {
   cursor: path.join(process.env.HOME, '.cursor', 'mcp.json'),
   gemini: path.join(process.env.HOME, '.gemini', 'settings.json'),
   codex: path.join(process.env.HOME, '.codex', 'config.toml'),
+  vscodeWorkspace: path.join(process.cwd(), '.vscode', 'mcp.json'),
+  antigravity: path.join(process.env.HOME, '.gemini', 'antigravity', 'mcp_config.json'),
 };
 
 // Nebula MCP server configuration
 const NEBULA_MCP_CONFIG = {
+  command: 'node',
+  args: [MCP_SERVER_PATH],
+  env: {
+    NEBULA_URL: NEBULA_URL
+  }
+};
+
+const NEBULA_MCP_VSCODE_CONFIG = {
+  type: 'stdio',
   command: 'node',
   args: [MCP_SERVER_PATH],
   env: {
@@ -80,9 +93,66 @@ function backupFile(filePath) {
   return null;
 }
 
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sortKeys(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortKeys);
+  }
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  return Object.keys(value)
+    .sort()
+    .reduce((acc, key) => {
+      acc[key] = sortKeys(value[key]);
+      return acc;
+    }, {});
+}
+
+function stableStringify(value) {
+  return JSON.stringify(sortKeys(value));
+}
+
+function deepEqual(a, b) {
+  return stableStringify(a) === stableStringify(b);
+}
+
+function mergeServerConfig(existing, desired) {
+  if (!isPlainObject(existing)) {
+    return desired;
+  }
+  const merged = { ...existing, ...desired };
+  if (isPlainObject(existing.env) || isPlainObject(desired.env)) {
+    merged.env = {
+      ...(isPlainObject(existing.env) ? existing.env : {}),
+      ...(isPlainObject(desired.env) ? desired.env : {}),
+    };
+  }
+  return merged;
+}
+
+function upsertMcpServer(config, rootKey, serverName, desiredConfig) {
+  if (!isPlainObject(config[rootKey])) {
+    config[rootKey] = {};
+  }
+  const existing = config[rootKey][serverName];
+  const next = mergeServerConfig(existing, desiredConfig);
+  if (deepEqual(existing, next)) {
+    return false;
+  }
+  config[rootKey][serverName] = next;
+  return true;
+}
+
 // Detect installed AI tools
 function detectTools() {
   const tools = {};
+  const hasVSCodeCli = commandExists('code') || commandExists('code-insiders');
+  const hasAntigravityCli = commandExists('antigravity') || commandExists('agy');
+  const hasVSCodeWorkspace = fs.existsSync(path.join(process.cwd(), '.vscode'));
 
   // Claude Code
   if (commandExists('claude')) {
@@ -109,84 +179,174 @@ function detectTools() {
     tools.codex = { name: 'Codex CLI', configPath: CONFIG_PATHS.codex };
   }
 
+  // VS Code / GitHub Copilot / Antigravity workspace config
+  if (hasVSCodeCli || hasAntigravityCli || hasVSCodeWorkspace) {
+    tools.vscodeWorkspace = {
+      name: 'VS Code / GitHub Copilot / Antigravity (workspace)',
+      configPath: CONFIG_PATHS.vscodeWorkspace
+    };
+  }
+
+  // Antigravity global config (if available)
+  if (
+    hasAntigravityCli ||
+    fs.existsSync(CONFIG_PATHS.antigravity) ||
+    fs.existsSync(path.dirname(CONFIG_PATHS.antigravity))
+  ) {
+    tools.antigravity = {
+      name: 'Antigravity (global)',
+      configPath: CONFIG_PATHS.antigravity
+    };
+  }
+
   return tools;
 }
 
-// Configure Claude Code
-function configureClaudeCode(configPath) {
-  let config = readJSON(configPath) || {};
+function configureJsonServer(configPath, rootKey, serverConfig, options = {}) {
+  const config = readJSON(configPath) || {};
+  const changed = upsertMcpServer(config, rootKey, 'nebula-notebook', serverConfig);
 
-  if (!config.mcpServers) {
-    config.mcpServers = {};
+  if (options.dryRun) {
+    return { changed };
+  }
+  if (!changed) {
+    return { changed: false };
   }
 
-  config.mcpServers['nebula-notebook'] = NEBULA_MCP_CONFIG;
   writeJSON(configPath, config);
+  return { changed: true };
+}
+
+function buildCodexBlock() {
+  return [
+    '[mcp_servers.nebula-notebook]',
+    'command = "node"',
+    `args = ["${MCP_SERVER_PATH}"]`,
+    '',
+    '[mcp_servers.nebula-notebook.env]',
+    `NEBULA_URL = "${NEBULA_URL}"`,
+  ].join('\n');
+}
+
+function normalizeToml(value) {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractCodexBlock(content) {
+  const baseMatch = content.match(/\[mcp_servers\.nebula-notebook\][\s\S]*?(?=\n\[|$)/);
+  const envMatch = content.match(/\[mcp_servers\.nebula-notebook\.env\][\s\S]*?(?=\n\[|$)/);
+  const parts = [];
+  if (baseMatch) {
+    parts.push(baseMatch[0].trim());
+  }
+  if (envMatch) {
+    parts.push(envMatch[0].trim());
+  }
+  return parts.join('\n\n').trim();
+}
+
+function codexHasRequiredConfig(content) {
+  const baseMatch = content.match(/\[mcp_servers\.nebula-notebook\][\s\S]*?(?=\n\[|$)/);
+  const envMatch = content.match(/\[mcp_servers\.nebula-notebook\.env\][\s\S]*?(?=\n\[|$)/);
+  if (!baseMatch || !envMatch) {
+    return false;
+  }
+
+  const baseBlock = baseMatch[0];
+  const envBlock = envMatch[0];
+  const hasCommand = /command\s*=\s*"node"/.test(baseBlock);
+  const hasArgs = new RegExp(`args\\s*=\\s*\\[\\s*"${escapeRegExp(MCP_SERVER_PATH)}"\\s*\\]`).test(baseBlock);
+  const hasEnv = new RegExp(`NEBULA_URL\\s*=\\s*"${escapeRegExp(NEBULA_URL)}"`).test(envBlock);
+
+  return hasCommand && hasArgs && hasEnv;
+}
+
+function stripCodexBlock(content) {
+  return content
+    .replace(/\[mcp_servers\.nebula-notebook\][\s\S]*?(?=\n\[|$)/g, '')
+    .replace(/\[mcp_servers\.nebula-notebook\.env\][\s\S]*?(?=\n\[|$)/g, '');
+}
+
+function prepareCodexContent(existingContent) {
+  const desiredBlock = buildCodexBlock().trim();
+  const baseCount = (existingContent.match(/\[mcp_servers\.nebula-notebook\]/g) || []).length;
+  const envCount = (existingContent.match(/\[mcp_servers\.nebula-notebook\.env\]/g) || []).length;
+  const existingBlock = extractCodexBlock(existingContent);
+  const matchesRequired = codexHasRequiredConfig(existingContent);
+  const hasDuplicates = baseCount > 1 || envCount > 1;
+  const isSame =
+    !hasDuplicates &&
+    (matchesRequired ||
+      (existingBlock &&
+        normalizeToml(existingBlock) === normalizeToml(desiredBlock) &&
+        baseCount <= 1 &&
+        envCount <= 1));
+
+  if (isSame) {
+    return { changed: false, content: existingContent };
+  }
+
+  let baseContent = stripCodexBlock(existingContent).trimEnd();
+  if (baseContent.length > 0) {
+    baseContent += '\n\n';
+  }
+  const nextContent = `${baseContent}${desiredBlock}\n`;
+  return { changed: true, content: nextContent };
+}
+
+// Configure Claude Code
+function configureClaudeCode(configPath, options = {}) {
+  return configureJsonServer(configPath, 'mcpServers', NEBULA_MCP_CONFIG, options);
 }
 
 // Configure Claude Desktop
-function configureClaudeDesktop(configPath) {
-  let config = readJSON(configPath) || {};
-
-  if (!config.mcpServers) {
-    config.mcpServers = {};
-  }
-
-  config.mcpServers['nebula-notebook'] = NEBULA_MCP_CONFIG;
-  writeJSON(configPath, config);
+function configureClaudeDesktop(configPath, options = {}) {
+  return configureJsonServer(configPath, 'mcpServers', NEBULA_MCP_CONFIG, options);
 }
 
 // Configure Cursor
-function configureCursor(configPath) {
-  let config = readJSON(configPath) || {};
-
-  if (!config.mcpServers) {
-    config.mcpServers = {};
-  }
-
-  config.mcpServers['nebula-notebook'] = NEBULA_MCP_CONFIG;
-  writeJSON(configPath, config);
+function configureCursor(configPath, options = {}) {
+  return configureJsonServer(configPath, 'mcpServers', NEBULA_MCP_CONFIG, options);
 }
 
 // Configure Gemini CLI
-function configureGemini(configPath) {
-  let config = readJSON(configPath) || {};
+function configureGemini(configPath, options = {}) {
+  return configureJsonServer(configPath, 'mcpServers', NEBULA_MCP_CONFIG, options);
+}
 
-  if (!config.mcpServers) {
-    config.mcpServers = {};
-  }
+// Configure VS Code / GitHub Copilot workspace config
+function configureVSCodeWorkspace(configPath, options = {}) {
+  return configureJsonServer(configPath, 'servers', NEBULA_MCP_VSCODE_CONFIG, options);
+}
 
-  config.mcpServers['nebula-notebook'] = NEBULA_MCP_CONFIG;
-  writeJSON(configPath, config);
+// Configure Antigravity global config
+function configureAntigravity(configPath, options = {}) {
+  return configureJsonServer(configPath, 'mcpServers', NEBULA_MCP_CONFIG, options);
 }
 
 // Configure Codex CLI (TOML format)
-function configureCodex(configPath) {
-  const tomlContent = `
-[mcp_servers.nebula-notebook]
-command = "node"
-args = ["${MCP_SERVER_PATH}"]
+function configureCodex(configPath, options = {}) {
+  const existingContent = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  const { changed, content } = prepareCodexContent(existingContent);
 
-[mcp_servers.nebula-notebook.env]
-NEBULA_URL = "${NEBULA_URL}"
-`;
+  if (options.dryRun) {
+    return { changed };
+  }
+  if (!changed) {
+    return { changed: false };
+  }
 
   const dir = path.dirname(configPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  let existingContent = '';
-  if (fs.existsSync(configPath)) {
-    existingContent = fs.readFileSync(configPath, 'utf8');
-    // Check if nebula-notebook already exists
-    if (existingContent.includes('[mcp_servers.nebula-notebook]')) {
-      // Remove existing nebula-notebook config
-      existingContent = existingContent.replace(/\[mcp_servers\.nebula-notebook\][\s\S]*?(?=\[|$)/g, '');
-    }
-  }
-
-  fs.writeFileSync(configPath, existingContent + tomlContent);
+  fs.writeFileSync(configPath, content);
+  return { changed: true };
 }
 
 // Prompt user for confirmation
@@ -213,7 +373,7 @@ async function main() {
 
   if (toolNames.length === 0) {
     console.log('❌ No supported AI tools detected.');
-    console.log('\nSupported tools: Claude Code, Claude Desktop, Cursor, Gemini CLI, Codex CLI');
+    console.log('\nSupported tools: Claude Code, Claude Desktop, Cursor, Gemini CLI, Codex CLI, VS Code / GitHub Copilot, Antigravity');
     process.exit(1);
   }
 
@@ -241,9 +401,27 @@ async function main() {
     process.exit(0);
   }
 
+  const configurators = {
+    claudeCode: configureClaudeCode,
+    claudeDesktop: configureClaudeDesktop,
+    cursor: configureCursor,
+    gemini: configureGemini,
+    codex: configureCodex,
+    vscodeWorkspace: configureVSCodeWorkspace,
+    antigravity: configureAntigravity,
+  };
+
+  const plan = {};
+  toolNames.forEach(key => {
+    plan[key] = configurators[key](tools[key].configPath, { dryRun: true });
+  });
+
   console.log('\n💾 Backing up configs...');
   const backups = {};
   toolNames.forEach(key => {
+    if (!plan[key]?.changed) {
+      return;
+    }
     const backup = backupFile(tools[key].configPath);
     if (backup) {
       backups[key] = backup;
@@ -253,19 +431,15 @@ async function main() {
 
   // Configure each tool
   console.log('');
-  const configurators = {
-    claudeCode: configureClaudeCode,
-    claudeDesktop: configureClaudeDesktop,
-    cursor: configureCursor,
-    gemini: configureGemini,
-    codex: configureCodex,
-  };
-
   for (const key of toolNames) {
     try {
       console.log(`⚙️  Configuring ${tools[key].name}...`);
+      if (!plan[key]?.changed) {
+        console.log(`↷ Already configured in ${path.basename(tools[key].configPath)}`);
+        continue;
+      }
       configurators[key](tools[key].configPath);
-      console.log(`✓ Added nebula-notebook to ${path.basename(tools[key].configPath)}`);
+      console.log(`✓ Added/updated nebula-notebook in ${path.basename(tools[key].configPath)}`);
     } catch (error) {
       console.error(`✗ Failed to configure ${tools[key].name}: ${error.message}`);
       if (backups[key]) {
@@ -281,6 +455,7 @@ async function main() {
   if (tools.cursor) console.log('  - Cursor → Settings → Model Context Protocol');
   if (tools.gemini) console.log('  - gemini mcp list');
   if (tools.codex) console.log('  - codex mcp list');
+  if (tools.vscodeWorkspace) console.log('  - VS Code → Settings → Model Context Protocol');
   console.log('');
 }
 
