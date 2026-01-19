@@ -7,7 +7,9 @@ import json
 from pathlib import Path
 
 from .permissions import AppContext, PermissionState
+from .config_loader import load_policy_config
 from .loop import LoopConfig, run_cli_loop
+from .policy import DefaultPolicy
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +36,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Sampling temperature (optional)",
+    )
+    parser.add_argument(
+        "--agent-config",
+        default=os.environ.get("AGENT_CONFIG") or os.environ.get("AGENT_CLI_CONFIG"),
+        help="Path to agent config YAML (optional)",
     )
     parser.add_argument(
         "--permission-mode",
@@ -194,11 +201,20 @@ async def main() -> None:
         os.environ["CLAUDE_MCP_CLIENTS"] = mcp_clients_text
     mcp_clients_raw = _load_json_value(mcp_clients_source)
     mcp_clients = mcp_clients_raw if isinstance(mcp_clients_raw, list) else None
+    policy_path = Path(args.agent_config).expanduser() if args.agent_config else None
+    policy_config = load_policy_config(policy_path)
+    policy = DefaultPolicy(policy_config)
+
     config = LoopConfig(
         backend=args.backend,
         model=resolved_model,
         fallback_model=args.fallback_model,
         temperature=args.temperature,
+        max_context_chars=policy_config.max_context_chars,
+        auto_compact_chars=policy_config.auto_compact_chars,
+        micro_compact_keep_last_tools=policy_config.micro_compact_keep_last_tools,
+        micro_tool_result_chars=policy_config.micro_tool_result_chars,
+        enable_compaction=policy_config.enable_compaction,
         tool_log_path=args.tool_log,
         tool_log_max_chars=args.tool_log_max_chars,
         trace_log_path=args.trace_log,
@@ -226,6 +242,7 @@ async def main() -> None:
         strip_system_reminders_in_tool_results=args.strip_system_reminders
         or os.environ.get("CLAUDE_STRIP_SYSTEM_REMINDERS", "").strip().lower()
         in {"1", "true", "yes"},
+        policy=policy,
     )
     try:
         await run_cli_loop(context, config)

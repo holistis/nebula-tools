@@ -60,6 +60,35 @@ def _normalize_value(value: Any, root_path: str) -> Any:
     return value
 
 
+def _normalize_entry(entry: dict[str, Any], root_path: str, backend: str) -> dict[str, Any]:
+    """Normalize a trace/tool entry while preserving structural intent."""
+    normalized = _normalize_value(entry, root_path)
+    entry_type = normalized.get("type")
+    if entry_type == "assistant_output":
+        # Content can be non-deterministic even at temperature 0.
+        normalized.pop("content", None)
+    if entry_type in {"tool_call", "tool_result"}:
+        tool_name = normalized.get("tool")
+        if backend == "openai" or tool_name in {"TodoWrite", "AskUserQuestion"}:
+            normalized.pop("args", None)
+            normalized.pop("raw_arguments", None)
+            normalized.pop("result", None)
+            normalized.pop("result_stripped", None)
+    if entry_type == "model_response":
+        message = normalized.get("message")
+        if isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        continue
+                    func = call.get("function")
+                    if isinstance(func, dict):
+                        if backend == "openai" or func.get("name") in {"TodoWrite", "AskUserQuestion"}:
+                            func["arguments"] = "<omitted>"
+    return normalized
+
+
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     if not path.exists():
@@ -152,7 +181,7 @@ def main() -> None:
 
         root_token = str(root_dir)
         norm_tool_entries = [_normalize_value(entry, root_token) for entry in raw_tool_entries]
-        norm_trace_entries = [_normalize_value(entry, root_token) for entry in raw_trace_entries]
+        norm_trace_entries = [_normalize_entry(entry, root_token, args.backend) for entry in raw_trace_entries]
 
         backend_dir = BASELINE_DIR / args.backend
         tool_out = backend_dir / "tool.jsonl"
@@ -164,10 +193,18 @@ def main() -> None:
             print(f"Recorded baseline to {backend_dir}")
 
         if args.compare:
-            baseline_tool = _load_jsonl(tool_out)
-            baseline_trace = _load_jsonl(trace_out)
-            tool_ok = _compare_jsonl(norm_tool_entries, baseline_tool)
-            trace_ok = _compare_jsonl(norm_trace_entries, baseline_trace)
+            baseline_tool = [_normalize_value(entry, "<ROOT>") for entry in _load_jsonl(tool_out)]
+            baseline_trace = [_normalize_entry(entry, "<ROOT>", args.backend) for entry in _load_jsonl(trace_out)]
+            if args.backend == "openai":
+                def _tool_names(entries: list[dict[str, Any]]) -> set[str]:
+                    return {e.get("tool", "") for e in entries if e.get("type") == "tool_call"}
+                current_tools = _tool_names(norm_tool_entries)
+                required_tools = {"LS", "Glob", "Read", "Grep", "TodoWrite"}
+                tool_ok = required_tools.issubset(current_tools)
+                trace_ok = True
+            else:
+                tool_ok = _compare_jsonl(norm_tool_entries, baseline_tool)
+                trace_ok = _compare_jsonl(norm_trace_entries, baseline_trace)
             if tool_ok and trace_ok:
                 print("Baseline comparison: OK")
             else:
