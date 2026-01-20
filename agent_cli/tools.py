@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import glob as globlib
 import inspect
+import json
 import os
 import re
 import shutil
@@ -10,6 +11,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -17,13 +19,38 @@ from agents import function_tool, RunContextWrapper, Agent
 from pydantic import BaseModel
 
 from .permissions import AppContext
-from .prompt_loader import load_tool_prompts, load_subagent_prompts, render_claude_code_guide_prompt
+from .prompt_loader import (
+    load_tool_prompts,
+    load_subagent_prompts,
+    load_subagent_metadata,
+    load_notes_block,
+    render_claude_code_guide_prompt,
+)
 
 MAX_LINE_LENGTH = 2000
 DEFAULT_LIMIT = 2000
+TRUNCATION_SUFFIX = "...[truncated]"
+
+# Claude Code tool result caps (2.1.12)
+MAX_RESULT_CHARS_BY_TOOL = {
+    "AskUserQuestion": 100000,
+    "Bash": 30000,
+    "Edit": 100000,
+    "Glob": 100000,
+    "Grep": 20000,
+    "Read": 100000,
+    "Task": 100000,
+    "TaskOutput": 100000,
+    "TodoWrite": 100000,
+    "Write": 100000,
+    # Not in Claude Code tool list; align with list/read tools.
+    "LS": 100000,
+}
 
 TOOL_PROMPTS = load_tool_prompts()
 SUBAGENT_PROMPTS = load_subagent_prompts()
+SUBAGENT_METADATA = load_subagent_metadata()
+NOTES_BLOCK = load_notes_block()
 SUBAGENT_DEFAULT_MODEL_LABELS = {
     "general-purpose": "inherit",
     "Explore": "haiku",
@@ -84,6 +111,102 @@ def _truncate_line(line: str) -> str:
     if len(line) <= MAX_LINE_LENGTH:
         return line
     return line[:MAX_LINE_LENGTH] + "..."
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(TRUNCATION_SUFFIX):
+        return text[:max_chars]
+    return text[: max_chars - len(TRUNCATION_SUFFIX)] + TRUNCATION_SUFFIX
+
+
+def _json_len(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        return len(str(value))
+
+
+def _truncate_nested(value: Any, max_chars: int) -> Any:
+    if max_chars <= 0:
+        if isinstance(value, list):
+            return []
+        if isinstance(value, dict):
+            return {}
+        return ""
+    try:
+        if _json_len(value) <= max_chars:
+            return value
+    except Exception:
+        pass
+    if isinstance(value, str):
+        return _truncate_text(value, max_chars)
+    if isinstance(value, list):
+        out: List[Any] = []
+        for item in value:
+            item_trunc = _truncate_nested(item, max_chars)
+            candidate = out + [item_trunc]
+            if _json_len(candidate) > max_chars:
+                break
+            out = candidate
+        if len(out) < len(value):
+            marker = TRUNCATION_SUFFIX
+            candidate = out + [marker]
+            if _json_len(candidate) <= max_chars:
+                out = candidate
+        return out
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, val in value.items():
+            val_trunc = _truncate_nested(val, max_chars)
+            candidate = dict(out)
+            candidate[key] = val_trunc
+            if _json_len(candidate) > max_chars:
+                break
+            out[key] = val_trunc
+        if len(out) < len(value):
+            marker_key = "_truncated"
+            candidate = dict(out)
+            candidate[marker_key] = True
+            if _json_len(candidate) <= max_chars:
+                out = candidate
+        return out
+    return _truncate_text(str(value), max_chars)
+
+
+def _truncate_bash_result(result: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+    stdout = result.get("stdout", "")
+    stderr = result.get("stderr", "")
+    if not isinstance(stdout, str):
+        stdout = str(stdout)
+    if not isinstance(stderr, str):
+        stderr = str(stderr)
+    if len(stdout) + len(stderr) <= max_chars:
+        return result
+    out = stdout
+    err = stderr
+    if len(out) > max_chars:
+        out = _truncate_text(out, max_chars)
+        err = ""
+    else:
+        remaining = max_chars - len(out)
+        err = _truncate_text(err, remaining)
+    updated = dict(result)
+    updated["stdout"] = out
+    updated["stderr"] = err
+    return updated
+
+
+def _truncate_tool_result(tool_name: str, result: Any) -> Any:
+    max_chars = MAX_RESULT_CHARS_BY_TOOL.get(tool_name)
+    if not max_chars:
+        return result
+    if tool_name == "Bash" and isinstance(result, dict):
+        return _truncate_bash_result(result, max_chars)
+    return _truncate_nested(result, max_chars)
 
 
 def _format_with_line_numbers(lines: List[str], start_line: int) -> str:
@@ -441,8 +564,38 @@ def _is_read_only_command(command: str) -> bool:
 def _subagent_prompt(agent_type: str) -> str:
     prompt = SUBAGENT_PROMPTS.get(agent_type, "").strip()
     if agent_type == "claude-code-guide" and prompt:
-        return render_claude_code_guide_prompt(prompt)
-    return prompt
+        prompt = render_claude_code_guide_prompt(prompt)
+    return _append_notes(prompt)
+
+
+def _append_notes(prompt: str) -> str:
+    if not NOTES_BLOCK:
+        return prompt
+    if not prompt:
+        return NOTES_BLOCK
+    if "Notes:" in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{NOTES_BLOCK}"
+
+
+def _subagent_default_model_label(agent_type: str) -> str:
+    meta = SUBAGENT_METADATA.get(agent_type) or {}
+    label = meta.get("model")
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+    return SUBAGENT_DEFAULT_MODEL_LABELS.get(agent_type, "")
+
+
+def _subagent_is_read_only(agent_type: str) -> bool:
+    meta = SUBAGENT_METADATA.get(agent_type) or {}
+    if meta.get("criticalSystemReminder"):
+        return True
+    disallowed = meta.get("disallowedTools")
+    if isinstance(disallowed, list):
+        lowered = {str(item).lower() for item in disallowed}
+        if "edit" in lowered or "write" in lowered:
+            return True
+    return agent_type in {"Explore", "Plan"}
 
 
 def _resolve_model_label(label: str) -> str:
@@ -469,7 +622,7 @@ def _subagent_model(agent_type: str, model: Optional[str]) -> str:
         cleaned = model.strip()
         if cleaned:
             return _resolve_model_label(cleaned)
-    default_label = SUBAGENT_DEFAULT_MODEL_LABELS.get(agent_type, "")
+    default_label = _subagent_default_model_label(agent_type)
     return _resolve_model_label(default_label)
 
 
@@ -477,6 +630,7 @@ def _build_subagent(agent_type: str, model: Optional[str]) -> Agent[AppContext]:
     instructions = _subagent_prompt(agent_type)
     if not instructions:
         instructions = f"You are a Claude Code subagent of type {agent_type}."
+    instructions = _append_notes(instructions)
     return Agent(
         name=f"Subagent-{agent_type}",
         instructions=instructions,
@@ -533,7 +687,7 @@ async def _task_tool(
     run_in_background: bool = False,
 ) -> Dict[str, Any]:
     agent = _build_subagent(subagent_type, model)
-    read_only = subagent_type in {"Explore", "Plan"}
+    read_only = _subagent_is_read_only(subagent_type)
     sub_context = AppContext(
         root_dir=ctx.context.root_dir,
         permissions=ctx.context.permissions,
@@ -697,6 +851,20 @@ _set_doc(_ask_user_question, "AskUserQuestion")
 _set_doc(_todo_write, "TodoWrite")
 
 def _wrap_tool(func, tool_name: str):
+    if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def _wrapped(*args, **kwargs):
+            result = await func(*args, **kwargs)
+            return _truncate_tool_result(tool_name, result)
+    else:
+        @wraps(func)
+        def _wrapped(*args, **kwargs):
+            result = func(*args, **kwargs)
+            return _truncate_tool_result(tool_name, result)
+    try:
+        _wrapped.__signature__ = inspect.signature(func)
+    except Exception:
+        pass
     params = {}
     try:
         params = inspect.signature(function_tool).parameters
@@ -707,11 +875,11 @@ def _wrap_tool(func, tool_name: str):
             params = {}
     kwargs = {}
     if "name_override" in params:
-        return function_tool(name_override=tool_name, **kwargs)(func)
+        return function_tool(name_override=tool_name, **kwargs)(_wrapped)
     if "name" in params:
-        return function_tool(name=tool_name, **kwargs)(func)
-    func.__name__ = tool_name
-    return function_tool(func)
+        return function_tool(name=tool_name, **kwargs)(_wrapped)
+    _wrapped.__name__ = tool_name
+    return function_tool(_wrapped)
 
 
 read_file = _wrap_tool(_read_file, "Read")

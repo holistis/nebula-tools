@@ -5,6 +5,8 @@ import json
 import os
 import signal
 import time
+import subprocess
+import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -15,6 +17,7 @@ from agents import RunContextWrapper
 from .permissions import AppContext, SAFE_TOOLS
 from .prompt_loader import (
     load_system_prompt,
+    load_system_prompt_blocks,
     load_compaction_prompt,
     load_base_prompts,
     select_base_prompt,
@@ -107,6 +110,84 @@ def _auto_allow_list(context: AppContext) -> str:
     return ", ".join(sorted(SAFE_TOOLS))
 
 
+def _model_display_name(model_id: str) -> str:
+    if not model_id:
+        return "unknown"
+    lowered = model_id.lower()
+    if "claude-opus-4-5" in lowered:
+        return "Opus 4.5"
+    if "claude-sonnet-4-5" in lowered:
+        return "Sonnet 4.5"
+    if "claude-haiku" in lowered:
+        return "Haiku"
+    return model_id
+
+
+def _ensure_prompt_model_env(model_id: Optional[str]) -> None:
+    if not model_id:
+        return
+    display = _model_display_name(model_id)
+    os.environ.setdefault("MODEL_ID", model_id)
+    os.environ.setdefault("MODEL_DISPLAY_NAME", display)
+    os.environ.setdefault("CLAUDE_MODEL_ID", model_id)
+    os.environ.setdefault("CLAUDE_MODEL_DISPLAY_NAME", display)
+
+
+def _ensure_scratchpad_path(context: AppContext) -> Optional[str]:
+    existing = context.system_context.get("scratchpad_path")
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip()
+    root_slug = str(context.root_dir.resolve()).replace("/", "-").replace("_", "-")
+    scratchpad = Path("/private/tmp/claude") / root_slug / str(uuid.uuid4()) / "scratchpad"
+    try:
+        scratchpad.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    context.system_context["scratchpad_path"] = str(scratchpad)
+    return str(scratchpad)
+
+
+def _build_git_status_block(root_dir: Path) -> Optional[str]:
+    if not (root_dir / ".git").exists():
+        return None
+
+    def _run_git(args: List[str]) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "--no-optional-locks", *args],
+                cwd=root_dir,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return ""
+        if result.returncode != 0:
+            return ""
+        return (result.stdout or "").strip()
+
+    branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+    main_branch = ""
+    raw_default = _run_git(["symbolic-ref", "refs/remotes/origin/HEAD"])
+    if raw_default:
+        main_branch = raw_default.rsplit("/", 1)[-1]
+    status = _run_git(["status", "--porcelain", "-uall"])
+    if not status:
+        status = "(clean)"
+    commits = _run_git(["log", "-5", "--oneline"])
+    block = (
+        "gitStatus: This is the git status at the start of the conversation. "
+        "Note that this status is a snapshot in time, and will not update during the conversation.\n"
+        f"Current branch: {branch}\n\n"
+        f"Main branch (you will usually use this for PRs): {main_branch}\n\n"
+        "Status:\n"
+        f"{status}\n\n"
+        "Recent commits:\n"
+        f"{commits}"
+    )
+    return block.strip()
+
+
 def _map_permission_mode_to_claude(mode: str, auto_approve: bool) -> str:
     if mode == "allow":
         return "bypassPermissions"
@@ -119,13 +200,81 @@ def _map_permission_mode_to_claude(mode: str, auto_approve: bool) -> str:
     return "default"
 
 
+def _format_system_context_block(system_context: Dict[str, str]) -> str:
+    if not system_context:
+        return ""
+    filtered = {k: v for k, v in system_context.items() if k != "scratchpad_path"}
+    if not filtered:
+        return ""
+    return "\n".join(f"{key}: {value}" for key, value in filtered.items()).strip()
+
+
 def _append_system_context(system_prompt: str, system_context: Dict[str, str]) -> str:
     if not system_context:
         return system_prompt
-    context_block = "\n".join(f"{key}: {value}" for key, value in system_context.items())
+    context_block = _format_system_context_block(system_context)
     if not context_block:
         return system_prompt
     return "\n\n".join([system_prompt, context_block])
+
+
+def _append_system_context_blocks(
+    parts: List[str],
+    system_context: Dict[str, str],
+) -> List[str]:
+    context_block = _format_system_context_block(system_context)
+    if not context_block:
+        return parts
+    return [p for p in parts if p] + [context_block]
+
+
+def _apply_claude_sdk_structured_system_prompt(
+    options: Any,
+    system_blocks: List[str],
+    config: LoopConfig,
+) -> bool:
+    if not system_blocks:
+        return False
+    system_payload = [{"type": "text", "text": block} for block in system_blocks if block]
+    if not system_payload:
+        return False
+    extra_body = {"system": system_payload}
+    existing_raw = None
+    if hasattr(options, "env") and isinstance(options.env, dict):
+        existing_raw = options.env.get("CLAUDE_CODE_EXTRA_BODY")
+    if not existing_raw:
+        existing_raw = os.environ.get("CLAUDE_CODE_EXTRA_BODY")
+    if existing_raw:
+        try:
+            parsed = json.loads(existing_raw)
+        except Exception as exc:
+            _append_trace_log(
+                config,
+                {
+                    "type": "warning",
+                    "timestamp": time.time(),
+                    "backend": "claude-sdk",
+                    "message": f"Invalid CLAUDE_CODE_EXTRA_BODY JSON; leaving it unchanged: {exc}",
+                },
+            )
+            return False
+        if not isinstance(parsed, dict):
+            _append_trace_log(
+                config,
+                {
+                    "type": "warning",
+                    "timestamp": time.time(),
+                    "backend": "claude-sdk",
+                    "message": "CLAUDE_CODE_EXTRA_BODY is not a JSON object; leaving it unchanged.",
+                },
+            )
+            return False
+        parsed.update(extra_body)
+        extra_body = parsed
+    if not hasattr(options, "env") or options.env is None:
+        options.env = {}
+    options.env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(extra_body)
+    return True
 
 
 def _wrap_user_context(messages: List[Dict[str, Any]], user_context: Dict[str, str]) -> List[Dict[str, Any]]:
@@ -157,18 +306,24 @@ def _user_context_reminder(user_context: Dict[str, str]) -> str:
     )
 
 
-def _build_user_prompt(user_input: str, context: AppContext, include_reminders: bool) -> str:
-    prompt = user_input
-    if not include_reminders:
-        return prompt
-    if (context.permissions.mode or "").lower() == "plan":
+def _build_user_prompt_parts(
+    user_input: str, context: AppContext, include_reminders: bool
+) -> List[str]:
+    parts: List[str] = []
+    if include_reminders and (context.permissions.mode or "").lower() == "plan":
         plan_text = _plan_mode_prompt(context.root_dir)
         if plan_text:
-            prompt = _wrap_system_reminder(plan_text) + "\n\n" + prompt
-    reminder = _user_context_reminder(context.user_context)
-    if reminder:
-        prompt = reminder + "\n\n" + prompt
-    return prompt
+            parts.append(_wrap_system_reminder(plan_text))
+    if include_reminders:
+        reminder = _user_context_reminder(context.user_context)
+        if reminder:
+            parts.append(reminder)
+    parts.append(user_input)
+    return [part for part in parts if part]
+
+
+def _build_user_prompt(user_input: str, context: AppContext, include_reminders: bool) -> str:
+    return "\n\n".join(_build_user_prompt_parts(user_input, context, include_reminders))
 
 
 def _wrap_system_reminder(text: str) -> str:
@@ -177,6 +332,38 @@ def _wrap_system_reminder(text: str) -> str:
         f"{text}\n"
         "</system-reminder>"
     )
+
+
+def _build_claude_sdk_user_blocks(
+    user_input: str,
+    context: AppContext,
+    include_reminders: bool,
+    pending_interruption: Optional[str],
+) -> Tuple[List[Dict[str, Any]], str]:
+    parts = _build_user_prompt_parts(user_input, context, include_reminders)
+    if pending_interruption:
+        truncated = pending_interruption
+        if len(truncated) > 8000:
+            truncated = truncated[:8000].rstrip() + "\n...[truncated]"
+        resume_note = _wrap_system_reminder(
+            "Previous response was interrupted by the user. Continue from where it left off.\n"
+            "Do NOT repeat the partial response. Resume immediately after it.\n\n"
+            f"PARTIAL RESPONSE:\n{truncated}"
+        )
+        parts = [resume_note] + parts
+    prompt_text = "\n\n".join(parts)
+    content_blocks = [{"type": "text", "text": part} for part in parts]
+    return content_blocks, prompt_text
+
+
+async def _claude_sdk_prompt_stream(
+    content_blocks: List[Dict[str, Any]],
+) -> Any:
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": content_blocks},
+        "parent_tool_use_id": None,
+    }
 
 
 def _plan_file_path() -> Path:
@@ -208,7 +395,11 @@ def _inject_plan_mode(messages: List[Dict[str, Any]], root_dir: Path, mode: str)
     return [{"role": "user", "content": reminder, "isMeta": True}] + messages
 
 
-def _build_system_prompt(context: AppContext, config: LoopConfig) -> str:
+def _build_system_prompt_blocks(context: AppContext, config: LoopConfig) -> List[str]:
+    _ensure_prompt_model_env(config.model)
+    scratchpad_path = _ensure_scratchpad_path(context)
+    if scratchpad_path:
+        os.environ.setdefault("CLAUDE_SCRATCHPAD_PATH", scratchpad_path)
     base_prompts = load_base_prompts()
     base_prompt = select_base_prompt(
         base_prompts,
@@ -216,21 +407,35 @@ def _build_system_prompt(context: AppContext, config: LoopConfig) -> str:
         bool(config.append_system_prompt),
     )
     attribution = (config.attribution_header or "").strip() or load_attribution_header()
-    default_body = load_system_prompt(
+    default_blocks = load_system_prompt_blocks(
         context.root_dir,
         _auto_allow_list(context),
         include_base=False,
         mcp_clients=config.mcp_clients,
         mcp_instructions=config.mcp_instructions,
     )
+    git_status = _build_git_status_block(context.root_dir)
+    if git_status:
+        default_blocks.append(git_status)
     custom = config.custom_system_prompt.strip() if config.custom_system_prompt else ""
     append = config.append_system_prompt.strip() if config.append_system_prompt else ""
-    system_blocks = [custom or default_body]
+    system_blocks = [custom] if custom else list(default_blocks)
     if append:
         system_blocks.append(append)
     mcp_cli = load_mcp_cli_block()
     parts = [p for p in [attribution, base_prompt, *system_blocks, mcp_cli] if p]
-    return "\n\n".join(parts).strip()
+    normalized: List[str] = []
+    for i, part in enumerate(parts):
+        if i == 0 or part.startswith("gitStatus:") or part.startswith("\n"):
+            normalized.append(part)
+        else:
+            normalized.append("\n" + part)
+    return normalized
+
+
+def _build_system_prompt(context: AppContext, config: LoopConfig) -> str:
+    parts = _build_system_prompt_blocks(context, config)
+    return "\n\n".join([p.strip() for p in parts if p and p.strip()]).strip()
 
 
 def _micro_compact(state: LoopState, config: LoopConfig) -> Optional[Dict[str, Any]]:
@@ -1098,8 +1303,18 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
 
     client = OpenAI() if _needs_openai_client(config) else None
     tools = build_openai_tools()
-    system_prompt = _build_system_prompt(context, config)
-    system_prompt = _append_system_context(system_prompt, context.system_context)
+    system_blocks = _build_system_prompt_blocks(context, config)
+    system_blocks = _append_system_context_blocks(system_blocks, context.system_context)
+    system_prompt = "\n\n".join([p.strip() for p in system_blocks if p and p.strip()]).strip()
+    structured_system = bool(system_blocks)
+    system_message: Dict[str, Any]
+    if structured_system:
+        system_message = {
+            "role": "system",
+            "content": [{"type": "text", "text": block} for block in system_blocks if block],
+        }
+    else:
+        system_message = {"role": "system", "content": system_prompt}
     _append_trace_log(
         config,
         {
@@ -1109,6 +1324,8 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
             "model": config.model,
             "fallback_model": config.fallback_model,
             "content": _truncate_log_value(system_prompt, config.trace_log_max_chars),
+            "blocks": _truncate_nested(system_blocks, config.trace_log_max_chars),
+            "structured": structured_system,
         },
     )
     state = LoopState()
@@ -1152,7 +1369,7 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
                 context.permissions.mode,
             )
             wrapped_messages = _wrap_user_context(wrapped_messages, context.user_context)
-            call_messages = [{"role": "system", "content": system_prompt}] + wrapped_messages
+            call_messages = [system_message] + wrapped_messages
             _append_trace_log(
                 config,
                 {
@@ -1173,7 +1390,31 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
                     message = _stream_openai_message(client, config.model, call_messages, tools)
                     streamed_openai = True
             except Exception:
-                if config.fallback_model:
+                if structured_system:
+                    flat_messages = [{"role": "system", "content": system_prompt}] + wrapped_messages
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "system_prompt_fallback",
+                            "timestamp": time.time(),
+                            "backend": "openai-or-litellm",
+                            "reason": "structured_system_failed",
+                        },
+                    )
+                    try:
+                        if _is_litellm_model(config.model):
+                            response = await _model_call(client, config, flat_messages, tools)
+                            message = _get_message(response)
+                        else:
+                            message = _stream_openai_message(client, config.model, flat_messages, tools)
+                            streamed_openai = True
+                    except Exception:
+                        if config.fallback_model:
+                            response = await _model_call(client, config, flat_messages, tools)
+                            message = _get_message(response)
+                        else:
+                            raise
+                elif config.fallback_model:
                     response = await _model_call(client, config, call_messages, tools)
                     message = _get_message(response)
                 else:
@@ -1272,9 +1513,11 @@ def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
         if tools_preset:
             options.tools = {"type": "preset", "preset": tools_preset}
     else:
-        system_prompt = _build_system_prompt(context, config)
-        system_prompt = _append_system_context(system_prompt, context.system_context)
+        system_blocks = _build_system_prompt_blocks(context, config)
+        system_blocks = _append_system_context_blocks(system_blocks, context.system_context)
+        system_prompt = "\n\n".join([p.strip() for p in system_blocks if p and p.strip()]).strip()
         options.system_prompt = system_prompt
+        _apply_claude_sdk_structured_system_prompt(options, system_blocks, config)
         if tools_preset:
             options.tools = {"type": "preset", "preset": tools_preset}
     return options
@@ -1286,6 +1529,20 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
         from claude_agent_sdk import types
     except Exception as exc:
         raise RuntimeError(f"claude-agent-sdk package required: {exc}") from exc
+    try:
+        import importlib.metadata as _metadata
+        anyio_version = _metadata.version("anyio")
+        major = int(anyio_version.split(".")[0])
+        if major < 4:
+            raise RuntimeError(
+                f"claude-sdk backend requires anyio>=4 (found {anyio_version}). "
+                "Please upgrade anyio or reinstall requirements."
+            )
+    except Exception as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        # If anyio is missing or version parsing fails, let the SDK raise its own error.
+        pass
 
     use_preset = bool(config.claude_sdk_preset)
     options = _build_claude_sdk_options(context, config)
@@ -1434,8 +1691,35 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             },
         )
 
+    structured_blocks = None
+    if not use_preset:
+        raw_extra = None
+        if hasattr(options, "env") and isinstance(options.env, dict):
+            raw_extra = options.env.get("CLAUDE_CODE_EXTRA_BODY")
+        if raw_extra:
+            try:
+                parsed = json.loads(raw_extra)
+                if isinstance(parsed, dict):
+                    system_payload = parsed.get("system")
+                    if isinstance(system_payload, list):
+                        extracted = []
+                        for item in system_payload:
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "text"
+                                and isinstance(item.get("text"), str)
+                            ):
+                                extracted.append(item["text"])
+                        if extracted:
+                            structured_blocks = extracted
+            except Exception:
+                structured_blocks = None
     system_prompt_label = (
-        f"preset:{config.claude_sdk_preset}" if use_preset else str(options.system_prompt or "")
+        f"preset:{config.claude_sdk_preset}"
+        if use_preset
+        else "\n\n".join(structured_blocks or [])
+        if structured_blocks
+        else str(options.system_prompt or "")
     )
     _append_trace_log(
         config,
@@ -1446,6 +1730,10 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             "model": config.model,
             "fallback_model": config.fallback_model,
             "content": _truncate_log_value(system_prompt_label, config.trace_log_max_chars),
+            "blocks": _truncate_nested(structured_blocks, config.trace_log_max_chars)
+            if structured_blocks
+            else None,
+            "structured": bool(structured_blocks),
         },
     )
 
@@ -1480,18 +1768,13 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             if user_input in {"/quit", "/exit"}:
                 break
 
-            prompt = _build_user_prompt(user_input, context, include_reminders=not use_preset)
-            if pending_interruption:
-                truncated = pending_interruption
-                if len(truncated) > 8000:
-                    truncated = truncated[:8000].rstrip() + "\n...[truncated]"
-                resume_note = _wrap_system_reminder(
-                    "Previous response was interrupted by the user. Continue from where it left off.\n"
-                    "Do NOT repeat the partial response. Resume immediately after it.\n\n"
-                    f"PARTIAL RESPONSE:\n{truncated}"
-                )
-                prompt = resume_note + "\n\n" + prompt
-                pending_interruption = None
+            content_blocks, prompt = _build_claude_sdk_user_blocks(
+                user_input,
+                context,
+                include_reminders=not use_preset,
+                pending_interruption=pending_interruption,
+            )
+            pending_interruption = None
             _append_trace_log(
                 config,
                 {
@@ -1506,7 +1789,17 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             )
             followup_prompt = prompt
             for _attempt in range(2 if auto_continue else 1):
-                await client.query(followup_prompt)
+                if followup_prompt == prompt:
+                    await client.query(_claude_sdk_prompt_stream(content_blocks))
+                else:
+                    followup_blocks, followup_text = _build_claude_sdk_user_blocks(
+                        followup_prompt,
+                        context,
+                        include_reminders=False,
+                        pending_interruption=None,
+                    )
+                    followup_prompt = followup_text
+                    await client.query(_claude_sdk_prompt_stream(followup_blocks))
 
                 output_parts: List[str] = []
                 streamed_text = ""
