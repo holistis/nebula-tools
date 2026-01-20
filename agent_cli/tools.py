@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import glob as globlib
 import inspect
+import json
 import os
 import re
 import shutil
@@ -10,20 +11,46 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from agents import function_tool, RunContextWrapper, Agent
+from agents import function_tool, RunContextWrapper, Agent, RunHooks
 from pydantic import BaseModel
 
 from .permissions import AppContext
-from .prompt_loader import load_tool_prompts, load_subagent_prompts, render_claude_code_guide_prompt
+from .prompt_loader import (
+    load_tool_prompts,
+    load_subagent_prompts,
+    load_subagent_metadata,
+    load_notes_block,
+    render_claude_code_guide_prompt,
+)
 
 MAX_LINE_LENGTH = 2000
 DEFAULT_LIMIT = 2000
+TRUNCATION_SUFFIX = "...[truncated]"
+
+# Claude Code tool result caps (2.1.12)
+MAX_RESULT_CHARS_BY_TOOL = {
+    "AskUserQuestion": 100000,
+    "Bash": 30000,
+    "Edit": 100000,
+    "Glob": 100000,
+    "Grep": 20000,
+    "Read": 100000,
+    "Task": 100000,
+    "TaskOutput": 100000,
+    "TodoWrite": 100000,
+    "Write": 100000,
+    # Not in Claude Code tool list; align with list/read tools.
+    "LS": 100000,
+}
 
 TOOL_PROMPTS = load_tool_prompts()
 SUBAGENT_PROMPTS = load_subagent_prompts()
+SUBAGENT_METADATA = load_subagent_metadata()
+NOTES_BLOCK = load_notes_block()
 SUBAGENT_DEFAULT_MODEL_LABELS = {
     "general-purpose": "inherit",
     "Explore": "haiku",
@@ -84,6 +111,102 @@ def _truncate_line(line: str) -> str:
     if len(line) <= MAX_LINE_LENGTH:
         return line
     return line[:MAX_LINE_LENGTH] + "..."
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(TRUNCATION_SUFFIX):
+        return text[:max_chars]
+    return text[: max_chars - len(TRUNCATION_SUFFIX)] + TRUNCATION_SUFFIX
+
+
+def _json_len(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False))
+    except Exception:
+        return len(str(value))
+
+
+def _truncate_nested(value: Any, max_chars: int) -> Any:
+    if max_chars <= 0:
+        if isinstance(value, list):
+            return []
+        if isinstance(value, dict):
+            return {}
+        return ""
+    try:
+        if _json_len(value) <= max_chars:
+            return value
+    except Exception:
+        pass
+    if isinstance(value, str):
+        return _truncate_text(value, max_chars)
+    if isinstance(value, list):
+        out: List[Any] = []
+        for item in value:
+            item_trunc = _truncate_nested(item, max_chars)
+            candidate = out + [item_trunc]
+            if _json_len(candidate) > max_chars:
+                break
+            out = candidate
+        if len(out) < len(value):
+            marker = TRUNCATION_SUFFIX
+            candidate = out + [marker]
+            if _json_len(candidate) <= max_chars:
+                out = candidate
+        return out
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, val in value.items():
+            val_trunc = _truncate_nested(val, max_chars)
+            candidate = dict(out)
+            candidate[key] = val_trunc
+            if _json_len(candidate) > max_chars:
+                break
+            out[key] = val_trunc
+        if len(out) < len(value):
+            marker_key = "_truncated"
+            candidate = dict(out)
+            candidate[marker_key] = True
+            if _json_len(candidate) <= max_chars:
+                out = candidate
+        return out
+    return _truncate_text(str(value), max_chars)
+
+
+def _truncate_bash_result(result: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+    stdout = result.get("stdout", "")
+    stderr = result.get("stderr", "")
+    if not isinstance(stdout, str):
+        stdout = str(stdout)
+    if not isinstance(stderr, str):
+        stderr = str(stderr)
+    if len(stdout) + len(stderr) <= max_chars:
+        return result
+    out = stdout
+    err = stderr
+    if len(out) > max_chars:
+        out = _truncate_text(out, max_chars)
+        err = ""
+    else:
+        remaining = max_chars - len(out)
+        err = _truncate_text(err, remaining)
+    updated = dict(result)
+    updated["stdout"] = out
+    updated["stderr"] = err
+    return updated
+
+
+def _truncate_tool_result(tool_name: str, result: Any) -> Any:
+    max_chars = MAX_RESULT_CHARS_BY_TOOL.get(tool_name)
+    if not max_chars:
+        return result
+    if tool_name == "Bash" and isinstance(result, dict):
+        return _truncate_bash_result(result, max_chars)
+    return _truncate_nested(result, max_chars)
 
 
 def _format_with_line_numbers(lines: List[str], start_line: int) -> str:
@@ -441,8 +564,38 @@ def _is_read_only_command(command: str) -> bool:
 def _subagent_prompt(agent_type: str) -> str:
     prompt = SUBAGENT_PROMPTS.get(agent_type, "").strip()
     if agent_type == "claude-code-guide" and prompt:
-        return render_claude_code_guide_prompt(prompt)
-    return prompt
+        prompt = render_claude_code_guide_prompt(prompt)
+    return _append_notes(prompt)
+
+
+def _append_notes(prompt: str) -> str:
+    if not NOTES_BLOCK:
+        return prompt
+    if not prompt:
+        return NOTES_BLOCK
+    if "Notes:" in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{NOTES_BLOCK}"
+
+
+def _subagent_default_model_label(agent_type: str) -> str:
+    meta = SUBAGENT_METADATA.get(agent_type) or {}
+    label = meta.get("model")
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+    return SUBAGENT_DEFAULT_MODEL_LABELS.get(agent_type, "")
+
+
+def _subagent_is_read_only(agent_type: str) -> bool:
+    meta = SUBAGENT_METADATA.get(agent_type) or {}
+    if meta.get("criticalSystemReminder"):
+        return True
+    disallowed = meta.get("disallowedTools")
+    if isinstance(disallowed, list):
+        lowered = {str(item).lower() for item in disallowed}
+        if "edit" in lowered or "write" in lowered:
+            return True
+    return agent_type in {"Explore", "Plan"}
 
 
 def _resolve_model_label(label: str) -> str:
@@ -469,14 +622,170 @@ def _subagent_model(agent_type: str, model: Optional[str]) -> str:
         cleaned = model.strip()
         if cleaned:
             return _resolve_model_label(cleaned)
-    default_label = SUBAGENT_DEFAULT_MODEL_LABELS.get(agent_type, "")
+    default_label = _subagent_default_model_label(agent_type)
     return _resolve_model_label(default_label)
+
+
+def _subagent_max_turns(agent_type: str) -> int:
+    meta = SUBAGENT_METADATA.get(agent_type) or {}
+    for key in ("maxTurns", "max_turns", "maxTurns".lower()):
+        value = meta.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = int(value)
+            except ValueError:
+                parsed = None
+            if parsed and parsed > 0:
+                return parsed
+    env_value = (
+        os.environ.get("OPENAI_SUBAGENT_MAX_TURNS")
+        or os.environ.get("SUBAGENT_MAX_TURNS")
+        or ""
+    ).strip()
+    if env_value:
+        try:
+            parsed = int(env_value)
+        except ValueError:
+            parsed = None
+        if parsed and parsed > 0:
+            return parsed
+    return 500
+
+
+def _parse_tool_args(raw: Any) -> Any:
+    if raw is None:
+        return {}
+    if isinstance(raw, (dict, list)):
+        return raw
+    if not isinstance(raw, str):
+        return str(raw)
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def _extract_response_text(response: Any) -> str:
+    output = getattr(response, "output", None)
+    if not output:
+        return ""
+    parts: List[str] = []
+    for item in output:
+        content = getattr(item, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            text = getattr(part, "text", None)
+            if isinstance(text, str) and text:
+                parts.append(text)
+                continue
+            refusal = getattr(part, "refusal", None)
+            if isinstance(refusal, str) and refusal:
+                parts.append(refusal)
+    return "\n".join([p for p in parts if p]).strip()
+
+
+def _extract_stream_delta(event: Any) -> str:
+    if event is None:
+        return ""
+    if isinstance(event, dict):
+        delta = event.get("delta")
+        if isinstance(delta, dict):
+            text = delta.get("text")
+            if isinstance(text, str) and text:
+                return text
+            inner_delta = delta.get("delta")
+            if isinstance(inner_delta, dict):
+                inner_text = inner_delta.get("text")
+                if isinstance(inner_text, str) and inner_text:
+                    return inner_text
+        text = event.get("text")
+        if isinstance(text, str) and text:
+            return text
+        return ""
+    event_type = getattr(event, "type", "") or ""
+    if isinstance(event_type, str) and event_type:
+        if "reasoning" in event_type:
+            return ""
+        if "text" not in event_type:
+            return ""
+    delta = getattr(event, "delta", None)
+    if isinstance(delta, str) and delta:
+        return delta
+    text = getattr(event, "text", None)
+    if isinstance(text, str) and text:
+        return text
+    return ""
+
+
+class _SubagentHooks(RunHooks[AppContext]):
+    def __init__(self, context: AppContext, subagent_type: str, agent_id: str) -> None:
+        super().__init__()
+        self.context = context
+        self.subagent_type = subagent_type
+        self.agent_id = agent_id
+        self._last_llm_text: Optional[str] = None
+
+    def _emit(self, entry: Dict[str, Any]) -> None:
+        entry = {
+            "timestamp": time.time(),
+            "backend": "openai-subagent",
+            "subagent_type": self.subagent_type,
+            "agent_id": self.agent_id,
+            **entry,
+        }
+        if self.context.trace_logger:
+            self.context.trace_logger(entry)
+        if entry.get("type") in {"tool_call", "tool_result"} and self.context.tool_logger:
+            self.context.tool_logger(entry)
+
+    async def on_tool_start(self, context: Any, agent: Any, tool: Any) -> None:
+        tool_name = getattr(context, "tool_name", None) or getattr(tool, "name", None)
+        tool_call_id = getattr(context, "tool_call_id", None)
+        raw_args = getattr(context, "tool_arguments", None)
+        self._emit(
+            {
+                "type": "tool_call",
+                "tool": tool_name,
+                "tool_call_id": tool_call_id,
+                "args": _parse_tool_args(raw_args),
+            }
+        )
+
+    async def on_tool_end(self, context: Any, agent: Any, tool: Any, result: str) -> None:
+        tool_name = getattr(context, "tool_name", None) or getattr(tool, "name", None)
+        tool_call_id = getattr(context, "tool_call_id", None)
+        self._emit(
+            {
+                "type": "tool_result",
+                "tool": tool_name,
+                "tool_call_id": tool_call_id,
+                "result": result,
+            }
+        )
+
+    async def on_llm_end(self, context: Any, agent: Any, response: Any) -> None:
+        text = _extract_response_text(response)
+        if text:
+            self._last_llm_text = text
+            self._emit({"type": "assistant_output", "content": text})
+
+    async def on_agent_end(self, context: Any, agent: Any, output: Any) -> None:
+        if isinstance(output, str) and output:
+            if output != self._last_llm_text:
+                self._emit({"type": "assistant_output", "content": output})
 
 
 def _build_subagent(agent_type: str, model: Optional[str]) -> Agent[AppContext]:
     instructions = _subagent_prompt(agent_type)
     if not instructions:
         instructions = f"You are a Claude Code subagent of type {agent_type}."
+    instructions = _append_notes(instructions)
     return Agent(
         name=f"Subagent-{agent_type}",
         instructions=instructions,
@@ -485,7 +794,13 @@ def _build_subagent(agent_type: str, model: Optional[str]) -> Agent[AppContext]:
     )
 
 
-async def _run_subagent(agent: Agent[AppContext], prompt: str, context: AppContext) -> Any:
+async def _run_subagent(
+    agent: Agent[AppContext],
+    prompt: str,
+    context: AppContext,
+    subagent_type: str,
+    agent_id: str,
+) -> Any:
     try:
         from agents import Runner
     except Exception as exc:
@@ -496,13 +811,53 @@ async def _run_subagent(agent: Agent[AppContext], prompt: str, context: AppConte
     except Exception:
         runner = Runner
     run_fn = getattr(runner, "run", runner)
+    run_streamed_fn = getattr(runner, "run_streamed", None)
     try:
         sig = inspect.signature(run_fn)
     except Exception:
         sig = None
+    try:
+        stream_sig = inspect.signature(run_streamed_fn) if run_streamed_fn else None
+    except Exception:
+        stream_sig = None
     kwargs: Dict[str, Any] = {}
+    hooks: Optional[_SubagentHooks] = None
+    if sig and "max_turns" in sig.parameters:
+        kwargs["max_turns"] = _subagent_max_turns(subagent_type)
+    if sig and "hooks" in sig.parameters:
+        hooks = _SubagentHooks(context, subagent_type, agent_id)
+        kwargs["hooks"] = hooks
     if sig and "context" in sig.parameters:
         kwargs["context"] = context
+
+    if run_streamed_fn is not None:
+        stream_kwargs = dict(kwargs)
+        if stream_sig and "max_turns" in stream_sig.parameters:
+            stream_kwargs["max_turns"] = _subagent_max_turns(subagent_type)
+        if stream_sig and "hooks" in stream_sig.parameters and hooks:
+            stream_kwargs["hooks"] = hooks
+        if stream_sig and "context" in stream_sig.parameters:
+            stream_kwargs["context"] = context
+        if stream_sig and "input" in stream_sig.parameters:
+            result = run_streamed_fn(agent, input=prompt, **stream_kwargs)
+        else:
+            result = run_streamed_fn(agent, prompt, **stream_kwargs)
+        if asyncio.iscoroutine(result):
+            result = await result
+
+        emit = hooks._emit if hooks else None
+        streamed_text = ""
+        stream_events = getattr(result, "stream_events", None)
+        if callable(stream_events):
+            async for event in stream_events():
+                raw_event = getattr(event, "data", None)
+                delta = _extract_stream_delta(raw_event)
+                if delta:
+                    streamed_text += delta
+                    if emit:
+                        emit({"type": "assistant_output", "content": streamed_text})
+        return result
+
     if sig and "input" in sig.parameters:
         result = run_fn(agent, input=prompt, **kwargs)
     else:
@@ -533,20 +888,24 @@ async def _task_tool(
     run_in_background: bool = False,
 ) -> Dict[str, Any]:
     agent = _build_subagent(subagent_type, model)
-    read_only = subagent_type in {"Explore", "Plan"}
+    read_only = _subagent_is_read_only(subagent_type)
     sub_context = AppContext(
         root_dir=ctx.context.root_dir,
         permissions=ctx.context.permissions,
         read_only=read_only,
         tasks=ctx.context.tasks,
         todos=ctx.context.todos,
+        trace_logger=ctx.context.trace_logger,
+        tool_logger=ctx.context.tool_logger,
+        trace_log_max_chars=ctx.context.trace_log_max_chars,
+        tool_log_max_chars=ctx.context.tool_log_max_chars,
     )
 
     agent_id = resume or str(uuid.uuid4())
 
     async def _run() -> Dict[str, Any]:
         start = time.time()
-        result = await _run_subagent(agent, prompt, sub_context)
+        result = await _run_subagent(agent, prompt, sub_context, subagent_type, agent_id)
         text = _result_text(result)
         duration_ms = int((time.time() - start) * 1000)
         return {
@@ -697,6 +1056,20 @@ _set_doc(_ask_user_question, "AskUserQuestion")
 _set_doc(_todo_write, "TodoWrite")
 
 def _wrap_tool(func, tool_name: str):
+    if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def _wrapped(*args, **kwargs):
+            result = await func(*args, **kwargs)
+            return _truncate_tool_result(tool_name, result)
+    else:
+        @wraps(func)
+        def _wrapped(*args, **kwargs):
+            result = func(*args, **kwargs)
+            return _truncate_tool_result(tool_name, result)
+    try:
+        _wrapped.__signature__ = inspect.signature(func)
+    except Exception:
+        pass
     params = {}
     try:
         params = inspect.signature(function_tool).parameters
@@ -707,11 +1080,11 @@ def _wrap_tool(func, tool_name: str):
             params = {}
     kwargs = {}
     if "name_override" in params:
-        return function_tool(name_override=tool_name, **kwargs)(func)
+        return function_tool(name_override=tool_name, **kwargs)(_wrapped)
     if "name" in params:
-        return function_tool(name=tool_name, **kwargs)(func)
-    func.__name__ = tool_name
-    return function_tool(func)
+        return function_tool(name=tool_name, **kwargs)(_wrapped)
+    _wrapped.__name__ = tool_name
+    return function_tool(_wrapped)
 
 
 read_file = _wrap_tool(_read_file, "Read")

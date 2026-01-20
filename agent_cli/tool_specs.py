@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from .prompt_loader import load_tool_prompts, load_subagent_prompts
+from .prompt_loader import load_tool_prompts, load_subagent_prompts, load_subagent_metadata
 
 
 TOOL_PROMPTS = load_tool_prompts()
@@ -11,6 +11,32 @@ TOOL_PROMPT_ALIASES = {
     "Task": "Task (agent)",
 }
 SUBAGENT_TYPES = sorted(load_subagent_prompts().keys())
+SUBAGENT_METADATA = load_subagent_metadata()
+
+
+def _format_subagent_metadata() -> str:
+    if not SUBAGENT_METADATA:
+        return ""
+    lines = ["Available subagent types (metadata):"]
+    for name in sorted(SUBAGENT_METADATA.keys()):
+        meta = SUBAGENT_METADATA.get(name) or {}
+        when = meta.get("whenToUse")
+        if when:
+            lines.append(f"- {name}: {when}")
+        extras = []
+        for key in ("model", "permissionMode", "tools", "disallowedTools", "criticalSystemReminder"):
+            value = meta.get(key)
+            if not value:
+                continue
+            if isinstance(value, list):
+                value = ", ".join(value)
+            extras.append(f"{key}={value}")
+        if extras:
+            lines.append(f"  ({'; '.join(extras)})")
+    return "\n".join(lines).strip()
+
+
+SUBAGENT_METADATA_TEXT = _format_subagent_metadata()
 
 
 def _desc(name: str, fallback: str) -> str:
@@ -114,7 +140,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "prompt": _prop("string", "Detailed instructions for the subagent."),
             "subagent_type": _prop(
                 "string",
-                "Agent type to launch (e.g., Explore, Plan).",
+                "Agent type to launch (e.g., Explore, Plan)."
+                + (f"\n\n{SUBAGENT_METADATA_TEXT}" if SUBAGENT_METADATA_TEXT else ""),
                 **({"enum": SUBAGENT_TYPES} if SUBAGENT_TYPES else {}),
             ),
             "model": _prop(
@@ -126,7 +153,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "run_in_background": _prop("boolean", "Run asynchronously.", default=False),
         },
         ["description", "prompt", "subagent_type"],
-        description="Launch a subagent for complex or parallelizable work.",
+        description="Launch a subagent for complex or parallelizable work."
+        + (f"\n\n{SUBAGENT_METADATA_TEXT}" if SUBAGENT_METADATA_TEXT else ""),
     ),
     "TaskOutput": _schema(
         {

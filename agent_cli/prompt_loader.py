@@ -65,8 +65,15 @@ def _strip_html_comments(text: str) -> str:
     return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
 
 
+def _normalize_trailing_newlines(value: str) -> str:
+    if value.endswith("\n"):
+        return value.rstrip("\n") + "\n"
+    return value
+
+
 def _extract_between(text: str, start: str, end: str) -> str:
-    norm = _normalize_markers(text)
+    clean = _strip_html_comments(text)
+    norm = _normalize_markers(clean)
     norm_start = _normalize_markers(start)
     norm_end = _normalize_markers(end)
     s = norm.find(norm_start)
@@ -75,18 +82,36 @@ def _extract_between(text: str, start: str, end: str) -> str:
     s = s + len(norm_start)
     e = norm.find(norm_end, s)
     if e == -1:
-        return _strip_html_comments(text[s:]).strip()
-    return _strip_html_comments(text[s:e]).strip()
+        return _normalize_trailing_newlines(clean[s:].strip(" \t"))
+    return _normalize_trailing_newlines(clean[s:e].strip(" \t"))
+
+
+def _extract_between_markers(text: str, start_marker: str, end_marker: str) -> str:
+    norm = _normalize_markers(text)
+    start = _normalize_markers(start_marker)
+    end = _normalize_markers(end_marker)
+    s = norm.find(start)
+    if s == -1:
+        return ""
+    s = s + len(start)
+    line_end = text.find("\n", s)
+    if line_end != -1:
+        s = line_end + 1
+    e = norm.find(end, s)
+    if e == -1:
+        return ""
+    return _normalize_trailing_newlines(text[s:e].strip(" \t"))
 
 
 def _extract_block(text: str, start: str, end_markers: list[str]) -> str:
-    norm = _normalize_markers(text)
+    clean = _strip_html_comments(text)
+    norm = _normalize_markers(clean)
     norm_start = _normalize_markers(start)
     s = norm.find(norm_start)
     if s == -1:
         return ""
     s = s + len(norm_start)
-    tail = text[s:]
+    tail = clean[s:]
     norm_tail = norm[s:]
     end_positions = [
         norm_tail.find(_normalize_markers(m))
@@ -94,9 +119,9 @@ def _extract_block(text: str, start: str, end_markers: list[str]) -> str:
         if norm_tail.find(_normalize_markers(m)) != -1
     ]
     if not end_positions:
-        return _strip_html_comments(tail).strip()
+        return _normalize_trailing_newlines(tail.strip(" \t"))
     e = min(end_positions)
-    return _strip_html_comments(tail[:e]).strip()
+    return _normalize_trailing_newlines(tail[:e].strip(" \t"))
 
 
 def _load_mcp_clients_from_env() -> list[dict]:
@@ -310,6 +335,7 @@ def _apply_core_conditionals(
 
     # Filter conditional blocks indicated by "[# ...]" headers.
     lines = core.splitlines()
+    had_trailing_newline = core.endswith("\n")
     out: list[str] = []
     include = True
     for raw in lines:
@@ -331,18 +357,31 @@ def _apply_core_conditionals(
             continue
         if include:
             out.append(raw)
-    return "\n".join(out).strip()
+    result = "\n".join(out).strip(" \t")
+    if had_trailing_newline and not result.endswith("\n"):
+        result += "\n"
+    return _normalize_trailing_newlines(result)
 
 
 def load_base_prompts() -> list[str]:
     prompt_dir = _find_prompt_dir()
     path = prompt_dir / "system_prompt.md"
     content = _read_prompt_file(path)
-    base_section = _extract_block(
+    base_section = _extract_between_markers(
         content,
-        "Base system prompt strings",
-        ["Core system prompt template"],
+        "<!-- BEGIN_BASE_PROMPTS",
+        "<!-- END_BASE_PROMPTS",
     )
+    if not base_section:
+        base_section = _extract_block(
+            content,
+            "Base system prompt strings",
+            ["Core system prompt template"],
+        )
+    # Drop the descriptive header line if present.
+    lines = [line for line in base_section.splitlines() if line.strip()]
+    if lines and lines[0].strip().lower().startswith("base system prompt strings"):
+        base_section = "\n".join(lines[1:])
     base_prompts = re.findall(r'^"(.+?)"$', base_section, flags=re.MULTILINE)
     return base_prompts
 
@@ -379,6 +418,23 @@ def load_system_prompt(
     mcp_clients: list[dict] | None = None,
     mcp_instructions: str | None = None,
 ) -> str:
+    parts = load_system_prompt_blocks(
+        root_dir=root_dir,
+        tool_list=tool_list,
+        include_base=include_base,
+        mcp_clients=mcp_clients,
+        mcp_instructions=mcp_instructions,
+    )
+    return "\n\n".join([p.strip() for p in parts if p.strip()]).strip()
+
+
+def load_system_prompt_blocks(
+    root_dir: Path | None = None,
+    tool_list: str | None = None,
+    include_base: bool = True,
+    mcp_clients: list[dict] | None = None,
+    mcp_instructions: str | None = None,
+) -> list[str]:
     prompt_dir = _find_prompt_dir()
     path = prompt_dir / "system_prompt.md"
     content = _read_prompt_file(path)
@@ -387,11 +443,21 @@ def load_system_prompt(
     base_prompts = load_base_prompts()
     base_prompt = base_prompts[0] if base_prompts else ""
 
-    core = _extract_between(
+    core = _extract_between_markers(
         content,
-        "Core system prompt template (Xy; conditional segments marked):",
-        "Additional system-prompt blocks appended",
+        "<!-- BEGIN_CORE_PROMPT",
+        "<!-- END_CORE_PROMPT",
     )
+    if core:
+        core_lines = core.splitlines()
+        if core_lines and core_lines[0].strip().lower().startswith("core system prompt template"):
+            core = "\n".join(core_lines[1:])
+    if not core:
+        core = _extract_between(
+            content,
+            "Core system prompt template (Xy; conditional segments marked):",
+            "Additional system-prompt blocks appended",
+        )
     if core:
         todo_enabled = os.environ.get("CLAUDE_TODO_AVAILABLE", "1").strip() != "0"
         ask_enabled = os.environ.get("CLAUDE_ASK_USER_AVAILABLE", "1").strip() != "0"
@@ -406,15 +472,15 @@ def load_system_prompt(
             ask_user_available=ask_enabled,
             keep_coding_instructions=True,
         )
+        if core and not core.endswith("\n"):
+            core += "\n"
 
     # security policy block duplicated (FA0)
-    security_lines = []
+    security_block = ""
     for line in core.splitlines():
         if line.startswith("IMPORTANT:"):
-            security_lines.append(line)
-        elif security_lines:
+            security_block = line.strip() + "\n"
             break
-    security_block = "\n".join(security_lines).strip()
 
     todo_reminder = ""
     todo_match = re.search(
@@ -434,12 +500,6 @@ def load_system_prompt(
         content,
         "Environment prompt (fA0):",
         ["Notes block", "Scratchpad block", "Reasoning effort block", "MCP Server Instructions block"],
-    )
-
-    notes_block = _extract_block(
-        content,
-        "Notes block (FgT) appended after env:",
-        ["Scratchpad block", "Reasoning effort block", "MCP Server Instructions block"],
     )
 
     scratchpad_block = _extract_block(
@@ -472,8 +532,18 @@ def load_system_prompt(
     is_git = "Yes" if (root / ".git").exists() else "No"
     os_version = platform.uname().system + " " + platform.uname().release
     today = datetime.now().strftime("%Y-%m-%d")
-    model_display = os.environ.get("MODEL_DISPLAY_NAME") or os.environ.get("OPENAI_MODEL") or "unknown"
-    model_id = os.environ.get("OPENAI_MODEL") or model_display
+    model_display = (
+        os.environ.get("MODEL_DISPLAY_NAME")
+        or os.environ.get("CLAUDE_MODEL_DISPLAY_NAME")
+        or os.environ.get("OPENAI_MODEL")
+        or "unknown"
+    )
+    model_id = (
+        os.environ.get("MODEL_ID")
+        or os.environ.get("CLAUDE_MODEL_ID")
+        or os.environ.get("OPENAI_MODEL")
+        or model_display
+    )
     raw_fast_model = os.environ.get("OPENAI_FAST_MODEL", "").strip()
     fast_model_id = raw_fast_model or "unspecified"
     fast_model_configured = "Yes" if raw_fast_model else "No"
@@ -499,7 +569,7 @@ def load_system_prompt(
             flags=re.MULTILINE,
         )
 
-    parts = []
+    parts: list[str] = []
     if include_base and base_prompt:
         parts.append(base_prompt)
     if core:
@@ -512,8 +582,6 @@ def load_system_prompt(
         parts.append(code_refs)
     if env_block:
         parts.append(env_block)
-    if notes_block:
-        parts.append("Notes:\n" + notes_block if not notes_block.startswith("Notes:") else notes_block)
 
     output_style = os.environ.get("CLAUDE_OUTPUT_STYLE", "").strip()
     if output_style and output_style.lower() != "default":
@@ -544,13 +612,39 @@ def load_system_prompt(
         parts.append(
             reasoning_block.replace("{low|medium|high -> 45/75/99}", mapped)
         )
-
-    assembled = "\n\n".join([p.strip() for p in parts if p.strip()])
     if tool_list:
-        assembled = assembled.replace("{tool list}", tool_list)
+        parts = [
+            p.replace("{tool list}", tool_list) if p else p
+            for p in parts
+        ]
     else:
-        assembled = re.sub(r"^.*\{tool list\}.*\n?", "", assembled, flags=re.MULTILINE)
-    return assembled.strip()
+        parts = [
+            re.sub(r"^.*\{tool list\}.*\n?", "", p, flags=re.MULTILINE)
+            if p else p
+            for p in parts
+        ]
+    cleaned: list[str] = []
+    for part in parts:
+        if not part or not part.strip():
+            continue
+        cleaned.append(part.strip(" \t"))
+    return cleaned
+
+
+def load_notes_block() -> str:
+    prompt_dir = _find_prompt_dir()
+    path = prompt_dir / "system_prompt.md"
+    content = _read_prompt_file(path)
+    notes_block = _extract_block(
+        content,
+        "Notes block (FgT) appended after env:",
+        ["Scratchpad block", "Reasoning effort block", "MCP Server Instructions block"],
+    )
+    if not notes_block:
+        return ""
+    if not notes_block.startswith("Notes:"):
+        notes_block = "Notes:\n" + notes_block
+    return notes_block.strip()
 
 
 def load_mcp_cli_block() -> str:
@@ -606,6 +700,18 @@ def load_subagent_prompts() -> dict[str, str]:
         body = _strip_html_comments(content[start:end]).strip()
         sections[agent_type] = body
     return sections
+
+
+def load_subagent_metadata() -> dict[str, dict]:
+    prompt_dir = _find_prompt_dir()
+    path = prompt_dir / "subagent_metadata.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(_read_prompt_file(path))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def load_plan_mode_prompt(plan_file_path: str, plan_exists: bool) -> str:

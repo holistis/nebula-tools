@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Tuple, Any
+from typing import Iterable, Tuple, Any, Callable, Optional
 
 
 SAFE_TOOLS = {"Read", "Grep", "Glob", "LS", "Task", "TaskOutput", "AskUserQuestion", "TodoWrite"}
@@ -67,6 +67,10 @@ class AppContext:
     todos: list[dict[str, str]] = field(default_factory=list)
     user_context: dict[str, str] = field(default_factory=dict)
     system_context: dict[str, str] = field(default_factory=dict)
+    trace_logger: Optional[Callable[[dict[str, Any]], None]] = None
+    tool_logger: Optional[Callable[[dict[str, Any]], None]] = None
+    trace_log_max_chars: int = 10_000
+    tool_log_max_chars: int = 10_000
 
     def resolve_path(self, file_path: str) -> Path:
         p = Path(file_path).expanduser()

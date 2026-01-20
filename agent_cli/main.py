@@ -242,7 +242,6 @@ async def main() -> None:
         strip_system_reminders_in_tool_results=args.strip_system_reminders
         or os.environ.get("CLAUDE_STRIP_SYSTEM_REMINDERS", "").strip().lower()
         in {"1", "true", "yes"},
-        policy=policy,
     )
     try:
         await run_cli_loop(context, config)

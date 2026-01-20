@@ -279,7 +279,6 @@ When NOT to use the Task tool:
 
 Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do
-- For lightweight tasks, use a small/fast model by setting the Task `model` parameter; reserve the primary model for complex reasoning, code changes, or high-stakes tasks.
 - Launch multiple agents concurrently whenever possible, in one message
 - Agent results are not visible to the user; summarize them for the user after completion
 - For background agents, use TaskOutput to retrieve results
