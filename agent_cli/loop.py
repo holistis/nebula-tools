@@ -2100,6 +2100,7 @@ async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
     stream_state: Dict[str, Dict[str, Any]] = {}
     last_agent_message: Dict[str, str] = {}
     latest_thread_id: Optional[str] = None
+    request_timeout = float(os.environ.get("CODEX_MCP_REQUEST_TIMEOUT", "300"))
 
     def _req_key(value: Any) -> str:
         if value is None:
@@ -2121,7 +2122,11 @@ async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
         if params is not None:
             payload["params"] = params
         await _send_json(payload)
-        return await future
+        try:
+            return await asyncio.wait_for(future, timeout=request_timeout)
+        except asyncio.TimeoutError as exc:
+            pending.pop(request_id, None)
+            raise RuntimeError(f"codex-mcp request timed out after {request_timeout}s") from exc
 
     async def _send_response(request_id: Any, result: Dict[str, Any]) -> None:
         response = {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -2317,10 +2322,17 @@ async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
                     },
                 )
 
+    def _reject_pending(error: str) -> None:
+        for key, future in list(pending.items()):
+            if not future.done():
+                future.set_exception(RuntimeError(error))
+            pending.pop(key, None)
+
     async def _stdout_reader() -> None:
         while True:
             line = await proc.stdout.readline()
             if not line:
+                _reject_pending("codex-mcp server closed")
                 break
             raw = line.decode("utf-8", errors="replace").strip()
             if not raw:
@@ -2434,10 +2446,23 @@ async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
                 tool_name = "codex"
             request_id = str(uuid.uuid4())
             stream_state[_req_key(request_id)] = {"streamed_any": False, "buffer": ""}
-            response = await _send_request(
-                "tools/call",
-                {"name": tool_name, "arguments": request_args},
-            )
+            try:
+                response = await _send_request(
+                    "tools/call",
+                    {"name": tool_name, "arguments": request_args},
+                )
+            except Exception as exc:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "warning",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "message": _truncate_log_value(str(exc), config.trace_log_max_chars),
+                    },
+                )
+                print(f"[codex-mcp] {exc}")
+                continue
             result = response.get("result") or {}
             if isinstance(result, dict):
                 structured = result.get("structuredContent") or result.get("structured_content") or {}
@@ -2486,6 +2511,7 @@ async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
                 proc.terminate()
             except Exception:
                 pass
+        _reject_pending("codex-mcp server stopped")
         stdout_task.cancel()
         stderr_task.cancel()
 
