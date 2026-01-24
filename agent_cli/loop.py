@@ -58,6 +58,7 @@ class LoopConfig:
     claude_sdk_tools_preset: Optional[str] = None
     claude_sdk_cli_path: Optional[str] = None
     claude_sdk_settings: Optional[str] = None
+    claude_sdk_max_thinking_tokens: Optional[int] = None
     claude_sdk_stream: bool = False
     claude_sdk_compat: bool = False
     claude_sdk_hooks: bool = False
@@ -556,6 +557,23 @@ def _assistant_blocks_text(blocks: Any) -> str:
     return "".join(parts)
 
 
+def _assistant_blocks_thinking(blocks: Any) -> str:
+    if not blocks:
+        return ""
+    parts: List[str] = []
+    for block in blocks:
+        text = ""
+        if isinstance(block, dict):
+            if block.get("type") == "thinking":
+                text = str(block.get("thinking") or "")
+        else:
+            if getattr(block, "type", None) == "thinking":
+                text = getattr(block, "thinking", "") or ""
+        if text:
+            parts.append(text)
+    return "".join(parts)
+
+
 def _extract_stream_text(event: Any) -> str:
     if not isinstance(event, dict):
         return ""
@@ -568,6 +586,26 @@ def _extract_stream_text(event: Any) -> str:
             return inner_delta["text"]
     if isinstance(event.get("text"), str):
         return event["text"]
+    return ""
+
+
+def _extract_stream_thinking(event: Any) -> str:
+    if not isinstance(event, dict):
+        return ""
+    delta = event.get("delta")
+    if isinstance(delta, dict):
+        if delta.get("type") == "thinking_delta" and isinstance(delta.get("thinking"), str):
+            return delta["thinking"]
+        if isinstance(delta.get("thinking"), str):
+            return delta["thinking"]
+        inner_delta = delta.get("delta")
+        if isinstance(inner_delta, dict):
+            if inner_delta.get("type") == "thinking_delta" and isinstance(inner_delta.get("thinking"), str):
+                return inner_delta["thinking"]
+            if isinstance(inner_delta.get("thinking"), str):
+                return inner_delta["thinking"]
+    if isinstance(event.get("thinking"), str):
+        return event["thinking"]
     return ""
 
 
@@ -1503,6 +1541,8 @@ def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
         context.permissions.auto_approve,
     )
     options.include_partial_messages = bool(config.claude_sdk_stream)
+    if config.claude_sdk_max_thinking_tokens:
+        options.max_thinking_tokens = config.claude_sdk_max_thinking_tokens
 
     tools_preset = config.claude_sdk_tools_preset
     if not tools_preset and config.claude_sdk_preset:
@@ -1804,6 +1844,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                 output_parts: List[str] = []
                 streamed_text = ""
                 streamed_any = False
+                streamed_thinking = ""
                 content = ""
                 last_session_id: Optional[str] = None
                 interrupted = False
@@ -1815,6 +1856,21 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                     async for msg in client.receive_response():
                         if isinstance(msg, types.StreamEvent):
                             last_session_id = msg.session_id or last_session_id
+                            delta_thinking = _extract_stream_thinking(msg.event)
+                            if delta_thinking:
+                                streamed_thinking += delta_thinking
+                                _append_trace_log(
+                                    config,
+                                    {
+                                        "type": "thinking_delta",
+                                        "timestamp": time.time(),
+                                        "backend": "claude-sdk",
+                                        "session_id": msg.session_id,
+                                        "content": _truncate_log_value(
+                                            delta_thinking, config.trace_log_max_chars
+                                        ),
+                                    },
+                                )
                             delta_text = _extract_stream_text(msg.event)
                             if delta_text:
                                 streamed_any = True
@@ -1825,6 +1881,20 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                                 text = _assistant_blocks_text(msg.content)
                                 if text:
                                     output_parts.append(text)
+                            thinking_text = _assistant_blocks_thinking(msg.content)
+                            if thinking_text and not streamed_thinking:
+                                _append_trace_log(
+                                    config,
+                                    {
+                                        "type": "thinking",
+                                        "timestamp": time.time(),
+                                        "backend": "claude-sdk",
+                                        "session_id": msg.session_id,
+                                        "content": _truncate_log_value(
+                                            thinking_text, config.trace_log_max_chars
+                                        ),
+                                    },
+                                )
                         if isinstance(msg, types.ResultMessage):
                             last_session_id = msg.session_id or last_session_id
                             _append_trace_log(

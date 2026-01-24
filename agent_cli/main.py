@@ -107,6 +107,13 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("CLAUDE_SDK_SETTINGS"),
         help="Path to Claude Code settings JSON for claude-sdk backend",
     )
+    default_max_thinking = os.environ.get("CLAUDE_SDK_MAX_THINKING_TOKENS")
+    parser.add_argument(
+        "--claude-sdk-max-thinking-tokens",
+        type=int,
+        default=int(default_max_thinking) if default_max_thinking else None,
+        help="Max thinking tokens for Claude SDK extended reasoning",
+    )
     parser.add_argument(
         "--claude-sdk-compat",
         action="store_true",
@@ -202,6 +209,7 @@ async def main() -> None:
         claude_sdk_tools_preset=args.claude_sdk_tools_preset,
         claude_sdk_cli_path=args.claude_sdk_cli_path,
         claude_sdk_settings=args.claude_sdk_settings,
+        claude_sdk_max_thinking_tokens=args.claude_sdk_max_thinking_tokens,
         claude_sdk_stream=args.claude_sdk_stream
         or os.environ.get("CLAUDE_SDK_STREAM", "").strip().lower() in {"1", "true", "yes"},
         claude_sdk_compat=args.claude_sdk_compat
