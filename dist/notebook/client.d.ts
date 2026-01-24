@@ -397,6 +397,7 @@ export declare class NebulaClient {
             is_binary?: boolean;
         }>;
         executionCount?: number;
+        executionStatus?: 'idle' | 'busy' | 'error';
         cellId: string;
         cellIndex: number;
         temp_files?: string[];

@@ -1029,6 +1029,7 @@ export class NebulaClient {
             data: {
                 outputs: opResult.outputs || [],
                 executionCount: opResult.executionCount,
+                executionStatus: opResult.executionStatus,
                 cellId: opResult.cellId,
                 cellIndex: opResult.cellIndex,
                 temp_files: opResult.temp_files,

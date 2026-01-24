@@ -36,6 +36,7 @@ export interface ReadOutputParams {
     cell_id?: string;
     output_offset?: number;
     max_wait?: number;
+    wait_for_completion?: boolean;
     max_lines?: number;
     max_chars?: number;
     max_lines_error?: number;

@@ -1316,6 +1316,7 @@ export class NebulaClient {
       is_binary?: boolean;
     }>;
     executionCount?: number;
+    executionStatus?: 'idle' | 'busy' | 'error';
     cellId: string;
     cellIndex: number;
     temp_files?: string[];
@@ -1349,6 +1350,7 @@ export class NebulaClient {
       data: {
         outputs: opResult.outputs || [],
         executionCount: opResult.executionCount,
+        executionStatus: opResult.executionStatus,
         cellId: opResult.cellId!,
         cellIndex: opResult.cellIndex!,
         temp_files: opResult.temp_files,

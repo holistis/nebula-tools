@@ -16,8 +16,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         default=os.environ.get("AGENT_BACKEND") or os.environ.get("AGENT_CLI_BACKEND", "openai"),
-        choices=["openai", "claude-sdk"],
-        help="Backend to use (openai/litellm or claude-agent-sdk)",
+        choices=["openai", "claude-sdk", "codex-mcp"],
+        help="Backend to use (openai/litellm, claude-agent-sdk, or codex-mcp)",
     )
     parser.add_argument(
         "--model",
@@ -107,6 +107,11 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("CLAUDE_SDK_SETTINGS"),
         help="Path to Claude Code settings JSON for claude-sdk backend",
     )
+    parser.add_argument(
+        "--codex-cli-path",
+        default=os.environ.get("CODEX_CLI_PATH"),
+        help="Path to the Codex CLI binary for codex-mcp backend",
+    )
     default_max_thinking = os.environ.get("CLAUDE_SDK_MAX_THINKING_TOKENS")
     parser.add_argument(
         "--claude-sdk-max-thinking-tokens",
@@ -173,6 +178,17 @@ def _load_json_value(value: str | None) -> object | None:
         raise ValueError(f"Invalid JSON for '{value}'")
 
 
+def _looks_like_mcp_server_map(payload: object) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    for value in payload.values():
+        if not isinstance(value, dict):
+            return False
+        if any(key in value for key in ("command", "url", "type", "instance")):
+            return True
+    return False
+
+
 async def main() -> None:
     args = parse_args()
     root = Path(args.root).resolve()
@@ -191,7 +207,23 @@ async def main() -> None:
     if mcp_clients_text:
         os.environ["CLAUDE_MCP_CLIENTS"] = mcp_clients_text
     mcp_clients_raw = _load_json_value(mcp_clients_source)
-    mcp_clients = mcp_clients_raw if isinstance(mcp_clients_raw, list) else None
+    mcp_clients = None
+    mcp_servers = None
+    if isinstance(mcp_clients_raw, dict):
+        servers = (
+            mcp_clients_raw.get("mcpServers")
+            or mcp_clients_raw.get("mcp_servers")
+            or mcp_clients_raw.get("servers")
+        )
+        if isinstance(servers, dict):
+            mcp_servers = servers
+        elif _looks_like_mcp_server_map(mcp_clients_raw):
+            mcp_servers = mcp_clients_raw
+        clients = mcp_clients_raw.get("clients") or mcp_clients_raw.get("mcpClients")
+        if isinstance(clients, list):
+            mcp_clients = clients
+    elif isinstance(mcp_clients_raw, list):
+        mcp_clients = mcp_clients_raw
     config = LoopConfig(
         backend=args.backend,
         model=args.model,
@@ -204,6 +236,7 @@ async def main() -> None:
         append_system_prompt=append_prompt,
         attribution_header=attribution_header,
         mcp_clients=mcp_clients,
+        mcp_servers=mcp_servers,
         non_interactive=args.non_interactive or non_interactive_env,
         claude_sdk_preset=args.claude_sdk_preset,
         claude_sdk_tools_preset=args.claude_sdk_tools_preset,
@@ -224,6 +257,7 @@ async def main() -> None:
         strip_system_reminders_in_tool_results=args.strip_system_reminders
         or os.environ.get("CLAUDE_STRIP_SYSTEM_REMINDERS", "").strip().lower()
         in {"1", "true", "yes"},
+        codex_cli_path=args.codex_cli_path,
     )
     try:
         await run_cli_loop(context, config)

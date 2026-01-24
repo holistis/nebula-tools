@@ -67,6 +67,7 @@ class AppContext:
     todos: list[dict[str, str]] = field(default_factory=list)
     user_context: dict[str, str] = field(default_factory=dict)
     system_context: dict[str, str] = field(default_factory=dict)
+    mcp_manager: Any = None
 
     def resolve_path(self, file_path: str) -> Path:
         p = Path(file_path).expanduser()

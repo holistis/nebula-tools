@@ -15,6 +15,7 @@ import re
 from agents import RunContextWrapper
 
 from .permissions import AppContext, SAFE_TOOLS
+from .mcp_manager import McpManager
 from .prompt_loader import (
     load_system_prompt,
     load_system_prompt_blocks,
@@ -68,6 +69,8 @@ class LoopConfig:
     attribution_header: Optional[str] = None
     mcp_clients: Optional[List[Dict[str, Any]]] = None
     mcp_instructions: Optional[str] = None
+    mcp_servers: Optional[Dict[str, Any]] = None
+    codex_cli_path: Optional[str] = None
 
 
 @dataclass
@@ -199,6 +202,16 @@ def _map_permission_mode_to_claude(mode: str, auto_approve: bool) -> str:
     if auto_approve:
         return "acceptEdits"
     return "default"
+
+
+def _map_permission_mode_to_codex(mode: str, auto_approve: bool) -> str:
+    if mode == "allow" or auto_approve:
+        return "never"
+    if mode == "deny":
+        return "on-request"
+    if mode == "plan":
+        return "on-request"
+    return "on-request"
 
 
 def _format_system_context_block(system_context: Dict[str, str]) -> str:
@@ -1007,6 +1020,16 @@ async def _run_tool(
     args: Dict[str, Any],
 ) -> Any:
     func = RAW_TOOL_MAP.get(name)
+    if func is None and name.startswith("mcp__"):
+        manager = getattr(ctx, "mcp_manager", None)
+        if not manager:
+            return {"error": f"MCP tool unavailable: {name}"}
+        if not ctx.permissions.check(name, name):
+            return {"error": f"Permission denied for {name}"}
+        try:
+            return await manager.call_tool(name, args)
+        except Exception as exc:
+            return {"error": f"{name} failed: {exc}"}
     if func is None:
         return {"error": f"Unknown tool: {name}"}
     wrapper = RunContextWrapper(ctx)
@@ -1340,183 +1363,228 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
         raise RuntimeError(f"openai package required: {exc}") from exc
 
     client = OpenAI() if _needs_openai_client(config) else None
-    tools = build_openai_tools()
-    system_blocks = _build_system_prompt_blocks(context, config)
-    system_blocks = _append_system_context_blocks(system_blocks, context.system_context)
-    system_prompt = "\n\n".join([p.strip() for p in system_blocks if p and p.strip()]).strip()
-    structured_system = bool(system_blocks)
-    system_message: Dict[str, Any]
-    if structured_system:
-        system_message = {
-            "role": "system",
-            "content": [{"type": "text", "text": block} for block in system_blocks if block],
-        }
-    else:
-        system_message = {"role": "system", "content": system_prompt}
-    _append_trace_log(
-        config,
-        {
-            "type": "system_prompt",
-            "timestamp": time.time(),
-            "backend": "openai-or-litellm",
-            "model": config.model,
-            "fallback_model": config.fallback_model,
-            "content": _truncate_log_value(system_prompt, config.trace_log_max_chars),
-            "blocks": _truncate_nested(system_blocks, config.trace_log_max_chars),
-            "structured": structured_system,
-        },
-    )
+    mcp_manager: Optional[McpManager] = None
+    extra_tools: List[Dict[str, Any]] = []
+    if config.mcp_servers:
+        try:
+            def _mcp_log(entry: Dict[str, Any]) -> None:
+                if "backend" not in entry:
+                    entry["backend"] = "openai-or-litellm"
+                _append_trace_log(config, entry)
+
+            mcp_manager = McpManager(config.mcp_servers, _mcp_log)
+            errors = await mcp_manager.connect_all()
+            context.mcp_manager = mcp_manager
+            instructions = mcp_manager.build_instructions_block()
+            if instructions:
+                config.mcp_instructions = instructions
+            extra_tools = mcp_manager.openai_tools()
+            if errors:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "warning",
+                        "timestamp": time.time(),
+                        "backend": "openai-or-litellm",
+                        "message": "MCP connection errors: " + "; ".join(errors),
+                    },
+                )
+        except Exception as exc:
+            _append_trace_log(
+                config,
+                {
+                    "type": "warning",
+                    "timestamp": time.time(),
+                    "backend": "openai-or-litellm",
+                    "message": f"MCP setup failed: {exc}",
+                },
+            )
     state = LoopState()
 
-    while True:
-        try:
-            user_input = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not user_input:
-            continue
-        if user_input in {"/quit", "/exit"}:
-            break
-
-        _append_trace_log(
-            config,
-            {
-                "type": "user_input",
-                "timestamp": time.time(),
-                "backend": "openai-or-litellm",
-                "content": _truncate_log_value(user_input, config.trace_log_max_chars),
-            },
-        )
-        state.messages.append({"role": "user", "content": user_input})
-
-        # Normalize + micro-compaction
-        compaction_info = _micro_compact(state, config)
-        if compaction_info and compaction_info.get("systemMessage"):
-            state.messages.append({"role": "system", "content": compaction_info["systemMessage"]})
-
-        # Auto-compaction
-        if _should_auto_compact(state, config):
-            await _compact(state, client, config)
-
-        # Loop until no tool calls
+    try:
         while True:
-            wrapped_messages = _inject_plan_mode(
-                list(state.messages),
-                context.root_dir,
-                context.permissions.mode,
-            )
-            wrapped_messages = _wrap_user_context(wrapped_messages, context.user_context)
-            call_messages = [system_message] + wrapped_messages
-            _append_trace_log(
-                config,
-                {
-                    "type": "model_request",
-                    "timestamp": time.time(),
-                    "model": config.model,
-                    "fallback_model": config.fallback_model,
-                    "messages": _truncate_nested(call_messages, config.trace_log_max_chars),
-                    "tools": _truncate_nested(tools, config.trace_log_max_chars),
-                },
-            )
-            streamed_openai = False
             try:
-                if _is_litellm_model(config.model):
-                    response = await _model_call(client, config, call_messages, tools)
-                    message = _get_message(response)
-                else:
-                    message = _stream_openai_message(client, config.model, call_messages, tools)
-                    streamed_openai = True
-            except Exception:
-                if structured_system:
-                    flat_messages = [{"role": "system", "content": system_prompt}] + wrapped_messages
-                    _append_trace_log(
-                        config,
-                        {
-                            "type": "system_prompt_fallback",
-                            "timestamp": time.time(),
-                            "backend": "openai-or-litellm",
-                            "reason": "structured_system_failed",
-                        },
-                    )
-                    try:
-                        if _is_litellm_model(config.model):
-                            response = await _model_call(client, config, flat_messages, tools)
-                            message = _get_message(response)
-                        else:
-                            message = _stream_openai_message(client, config.model, flat_messages, tools)
-                            streamed_openai = True
-                    except Exception:
-                        if config.fallback_model:
-                            response = await _model_call(client, config, flat_messages, tools)
-                            message = _get_message(response)
-                        else:
-                            raise
-                elif config.fallback_model:
-                    response = await _model_call(client, config, call_messages, tools)
-                    message = _get_message(response)
-                else:
-                    raise
-            tool_calls = _parse_tool_calls(message)
-            _append_trace_log(
-                config,
-                {
-                    "type": "model_response",
-                    "timestamp": time.time(),
-                    "model": config.model,
-                    "message": _truncate_nested(
-                        _serialize_message_for_log(message), config.trace_log_max_chars
-                    ),
-                    "tool_calls": _truncate_nested(tool_calls, config.trace_log_max_chars),
-                },
-            )
-            serialized_calls = None
-            if tool_calls:
-                serialized_calls = [
-                    {
-                        "id": call["id"],
-                        "type": "function",
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call.get("raw_arguments") or json.dumps(call["args"]),
-                        },
-                    }
-                    for call in tool_calls
-                ]
-            state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": _message_content(message),
-                    "tool_calls": serialized_calls,
-                }
-            )
-            if not tool_calls:
-                content = _message_content(message)
-                if content:
-                    _append_trace_log(
-                        config,
-                        {
-                            "type": "assistant_output",
-                            "timestamp": time.time(),
-                            "backend": "openai-or-litellm",
-                            "content": _truncate_log_value(content, config.trace_log_max_chars),
-                        },
-                    )
-                    if not streamed_openai:
-                        print(content)
-                    else:
-                        print()
+                user_input = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not user_input:
+                continue
+            if user_input in {"/quit", "/exit"}:
                 break
 
-            tool_results = await _execute_tools(context, config, tool_calls)
-            for result in tool_results:
+            _append_trace_log(
+                config,
+                {
+                    "type": "user_input",
+                    "timestamp": time.time(),
+                    "backend": "openai-or-litellm",
+                    "content": _truncate_log_value(user_input, config.trace_log_max_chars),
+                },
+            )
+            state.messages.append({"role": "user", "content": user_input})
+
+            # Normalize + micro-compaction
+            compaction_info = _micro_compact(state, config)
+            if compaction_info and compaction_info.get("systemMessage"):
+                state.messages.append({"role": "system", "content": compaction_info["systemMessage"]})
+
+            # Auto-compaction
+            if _should_auto_compact(state, config):
+                await _compact(state, client, config)
+
+            # Refresh MCP instructions before each request (hot updates)
+            if mcp_manager:
+                config.mcp_instructions = mcp_manager.build_instructions_block() or None
+
+            system_blocks = _build_system_prompt_blocks(context, config)
+            system_blocks = _append_system_context_blocks(system_blocks, context.system_context)
+            system_prompt = "\n\n".join([p.strip() for p in system_blocks if p and p.strip()]).strip()
+            structured_system = bool(system_blocks)
+            system_message: Dict[str, Any]
+            if structured_system:
+                system_message = {
+                    "role": "system",
+                    "content": [{"type": "text", "text": block} for block in system_blocks if block],
+                }
+            else:
+                system_message = {"role": "system", "content": system_prompt}
+            _append_trace_log(
+                config,
+                {
+                    "type": "system_prompt",
+                    "timestamp": time.time(),
+                    "backend": "openai-or-litellm",
+                    "model": config.model,
+                    "fallback_model": config.fallback_model,
+                    "content": _truncate_log_value(system_prompt, config.trace_log_max_chars),
+                    "blocks": _truncate_nested(system_blocks, config.trace_log_max_chars),
+                    "structured": structured_system,
+                },
+            )
+
+            # Loop until no tool calls
+            while True:
+                tools = build_openai_tools() + (mcp_manager.openai_tools() if mcp_manager else [])
+                wrapped_messages = _inject_plan_mode(
+                    list(state.messages),
+                    context.root_dir,
+                    context.permissions.mode,
+                )
+                wrapped_messages = _wrap_user_context(wrapped_messages, context.user_context)
+                call_messages = [system_message] + wrapped_messages
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "model_request",
+                        "timestamp": time.time(),
+                        "model": config.model,
+                        "fallback_model": config.fallback_model,
+                        "messages": _truncate_nested(call_messages, config.trace_log_max_chars),
+                        "tools": _truncate_nested(tools, config.trace_log_max_chars),
+                    },
+                )
+                streamed_openai = False
+                try:
+                    if _is_litellm_model(config.model):
+                        response = await _model_call(client, config, call_messages, tools)
+                        message = _get_message(response)
+                    else:
+                        message = _stream_openai_message(client, config.model, call_messages, tools)
+                        streamed_openai = True
+                except Exception:
+                    if structured_system:
+                        flat_messages = [{"role": "system", "content": system_prompt}] + wrapped_messages
+                        _append_trace_log(
+                            config,
+                            {
+                                "type": "system_prompt_fallback",
+                                "timestamp": time.time(),
+                                "backend": "openai-or-litellm",
+                                "reason": "structured_system_failed",
+                            },
+                        )
+                        try:
+                            if _is_litellm_model(config.model):
+                                response = await _model_call(client, config, flat_messages, tools)
+                                message = _get_message(response)
+                            else:
+                                message = _stream_openai_message(client, config.model, flat_messages, tools)
+                                streamed_openai = True
+                        except Exception:
+                            if config.fallback_model:
+                                response = await _model_call(client, config, flat_messages, tools)
+                                message = _get_message(response)
+                            else:
+                                raise
+                    elif config.fallback_model:
+                        response = await _model_call(client, config, call_messages, tools)
+                        message = _get_message(response)
+                    else:
+                        raise
+                tool_calls = _parse_tool_calls(message)
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "model_response",
+                        "timestamp": time.time(),
+                        "model": config.model,
+                        "message": _truncate_nested(
+                            _serialize_message_for_log(message), config.trace_log_max_chars
+                        ),
+                        "tool_calls": _truncate_nested(tool_calls, config.trace_log_max_chars),
+                    },
+                )
+                serialized_calls = None
+                if tool_calls:
+                    serialized_calls = [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call.get("raw_arguments") or json.dumps(call["args"]),
+                            },
+                        }
+                        for call in tool_calls
+                    ]
                 state.messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": result["tool_call_id"],
-                        "content": result["content"],
+                        "role": "assistant",
+                        "content": _message_content(message),
+                        "tool_calls": serialized_calls,
                     }
                 )
+                if not tool_calls:
+                    content = _message_content(message)
+                    if content:
+                        _append_trace_log(
+                            config,
+                            {
+                                "type": "assistant_output",
+                                "timestamp": time.time(),
+                                "backend": "openai-or-litellm",
+                                "content": _truncate_log_value(content, config.trace_log_max_chars),
+                            },
+                        )
+                        if not streamed_openai:
+                            print(content)
+                        else:
+                            print()
+                    break
+
+                tool_results = await _execute_tools(context, config, tool_calls)
+                for result in tool_results:
+                    state.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": result["tool_call_id"],
+                            "content": result["content"],
+                        }
+                    )
+    finally:
+        if mcp_manager:
+            await mcp_manager.close()
 
 
 def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
@@ -1543,6 +1611,8 @@ def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
     options.include_partial_messages = bool(config.claude_sdk_stream)
     if config.claude_sdk_max_thinking_tokens:
         options.max_thinking_tokens = config.claude_sdk_max_thinking_tokens
+    if config.mcp_servers:
+        options.mcp_servers = config.mcp_servers
 
     tools_preset = config.claude_sdk_tools_preset
     if not tools_preset and config.claude_sdk_preset:
@@ -2007,8 +2077,424 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             pass
 
 
+async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
+    codex_cli = (
+        config.codex_cli_path
+        or os.environ.get("CODEX_CLI_PATH")
+        or os.environ.get("CODEX_PATH")
+        or "codex"
+    )
+    env = dict(os.environ)
+    proc = await asyncio.create_subprocess_exec(
+        codex_cli,
+        "mcp-server",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    if not proc.stdin or not proc.stdout:
+        raise RuntimeError("Failed to start codex mcp-server")
+
+    pending: Dict[str, asyncio.Future] = {}
+    stream_state: Dict[str, Dict[str, Any]] = {}
+    last_agent_message: Dict[str, str] = {}
+    latest_thread_id: Optional[str] = None
+
+    def _req_key(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
+    async def _send_json(message: Dict[str, Any]) -> None:
+        try:
+            proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+            await proc.stdin.drain()
+        except Exception:
+            return
+
+    async def _send_request(method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        pending[request_id] = future
+        payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        await _send_json(payload)
+        return await future
+
+    async def _send_response(request_id: Any, result: Dict[str, Any]) -> None:
+        response = {"jsonrpc": "2.0", "id": request_id, "result": result}
+        await _send_json(response)
+
+    def _should_auto_approve() -> bool:
+        if context.permissions.mode == "allow":
+            return True
+        if context.permissions.auto_approve:
+            return True
+        return False
+
+    async def _handle_elicitation(request_id: Any, params: Dict[str, Any]) -> None:
+        approval_kind = params.get("codex_elicitation") or params.get("codexElicitation")
+        decision = "approved" if _should_auto_approve() else "denied"
+        _append_trace_log(
+            config,
+            {
+                "type": "approval_request",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "approval_type": approval_kind,
+                "decision": decision,
+                "message": params.get("message"),
+            },
+        )
+        await _send_response(request_id, {"decision": decision})
+
+    def _log_tool_call(tool: str, args: Any, meta: Dict[str, Any]) -> None:
+        _append_tool_log(
+            config,
+            {
+                "type": "tool_call",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "tool": tool,
+                "args": _truncate_nested(args, config.tool_log_max_chars),
+                **meta,
+            },
+        )
+
+    def _log_tool_result(tool: str, args: Any, result: Any, meta: Dict[str, Any]) -> None:
+        _append_tool_log(
+            config,
+            {
+                "type": "tool_result",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "tool": tool,
+                "args": _truncate_nested(args, config.tool_log_max_chars),
+                "result": _truncate_nested(result, config.tool_log_max_chars),
+                **meta,
+            },
+        )
+
+    def _extract_mcp_result(result: Any) -> Tuple[Any, Optional[bool]]:
+        if isinstance(result, dict):
+            if "Ok" in result:
+                ok_result = result.get("Ok")
+                is_error = None
+                if isinstance(ok_result, dict):
+                    is_error = ok_result.get("is_error")
+                return ok_result, is_error
+            if "Err" in result:
+                return {"error": result.get("Err")}, True
+        return result, None
+
+    def _format_command(command: Any) -> str:
+        if isinstance(command, list):
+            return " ".join(str(part) for part in command if part is not None)
+        return str(command or "")
+
+    def _handle_event(params: Dict[str, Any]) -> None:
+        nonlocal latest_thread_id
+        meta = params.get("_meta") or {}
+        req_id = _req_key(meta.get("requestId"))
+        msg = params.get("msg") or {}
+        event_type = msg.get("type")
+        if event_type == "session_configured":
+            thread_id = msg.get("session_id")
+            if thread_id and not latest_thread_id:
+                latest_thread_id = str(thread_id)
+            _append_trace_log(
+                config,
+                {
+                    "type": "session_configured",
+                    "timestamp": time.time(),
+                    "backend": "codex-mcp",
+                    "session_id": thread_id,
+                    "model": msg.get("model"),
+                    "provider": msg.get("model_provider_id"),
+                },
+            )
+            return
+        if event_type == "reasoning_content_delta":
+            delta = msg.get("delta")
+            if delta:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "thinking_delta",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "content": _truncate_log_value(str(delta), config.trace_log_max_chars),
+                    },
+                )
+            return
+        if event_type == "agent_message_content_delta":
+            delta = msg.get("delta")
+            if delta:
+                state = stream_state.setdefault(req_id, {"streamed_any": False, "buffer": ""})
+                state["streamed_any"] = True
+                state["buffer"] += str(delta)
+                print(str(delta), end="", flush=True)
+            return
+        if event_type == "agent_message":
+            message = msg.get("message")
+            if isinstance(message, str) and message:
+                last_agent_message[req_id] = message
+            return
+        if event_type == "mcp_tool_call_begin":
+            invocation = msg.get("invocation") or {}
+            tool = invocation.get("tool") or "Tool"
+            args = invocation.get("arguments") or {}
+            _log_tool_call(
+                str(tool),
+                args,
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "mcp_server": invocation.get("server"),
+                    "mcp_tool": invocation.get("tool"),
+                },
+            )
+            return
+        if event_type == "mcp_tool_call_end":
+            invocation = msg.get("invocation") or {}
+            tool = invocation.get("tool") or "Tool"
+            args = invocation.get("arguments") or {}
+            result, is_error = _extract_mcp_result(msg.get("result"))
+            _log_tool_result(
+                str(tool),
+                args,
+                result,
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "mcp_server": invocation.get("server"),
+                    "mcp_tool": invocation.get("tool"),
+                    "is_error": is_error,
+                },
+            )
+            return
+        if event_type == "exec_command_begin":
+            command = _format_command(msg.get("command"))
+            _log_tool_call(
+                "Bash",
+                {"command": command, "cwd": str(msg.get("cwd") or "")},
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "tool_cwd": str(msg.get("cwd") or ""),
+                    "exec_source": msg.get("source"),
+                },
+            )
+            return
+        if event_type == "exec_command_end":
+            command = _format_command(msg.get("command"))
+            result_payload = {
+                "stdout": msg.get("stdout"),
+                "stderr": msg.get("stderr"),
+                "exit_code": msg.get("exit_code"),
+                "aggregated_output": msg.get("aggregated_output"),
+            }
+            _log_tool_result(
+                "Bash",
+                {"command": command, "cwd": str(msg.get("cwd") or "")},
+                result_payload,
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "tool_cwd": str(msg.get("cwd") or ""),
+                    "exec_source": msg.get("source"),
+                },
+            )
+            return
+        if event_type in {"warning", "error"}:
+            message = msg.get("message") or msg.get("error") or msg.get("text")
+            if message:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "warning",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "message": _truncate_log_value(str(message), config.trace_log_max_chars),
+                    },
+                )
+
+    async def _stdout_reader() -> None:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            raw = line.decode("utf-8", errors="replace").strip()
+            if not raw:
+                continue
+            try:
+                message = json.loads(raw)
+            except Exception:
+                continue
+            if "method" in message:
+                method = message.get("method")
+                params = message.get("params") or {}
+                if method == "codex/event":
+                    _handle_event(params)
+                elif method == "elicitation/request":
+                    await _handle_elicitation(message.get("id"), params)
+                continue
+            if "id" in message:
+                key = _req_key(message.get("id"))
+                future = pending.pop(key, None)
+                if future and not future.done():
+                    if "error" in message:
+                        future.set_exception(RuntimeError(message.get("error")))
+                    else:
+                        future.set_result(message)
+
+    async def _stderr_reader() -> None:
+        if not proc.stderr:
+            return
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").strip()
+            if text:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "warning",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "message": _truncate_log_value(text, config.trace_log_max_chars),
+                    },
+                )
+
+    stdout_task = asyncio.create_task(_stdout_reader())
+    stderr_task = asyncio.create_task(_stderr_reader())
+
+    init_payload = {
+        "protocolVersion": "2025-06-18",
+        "clientInfo": {"name": "nexus-agent-cli", "version": "0.1"},
+        "capabilities": {},
+    }
+    try:
+        await _send_request("initialize", init_payload)
+    except Exception:
+        pass
+
+    system_prompt = _build_system_prompt(context, config)
+    if system_prompt:
+        _append_trace_log(
+            config,
+            {
+                "type": "system_prompt",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "content": _truncate_log_value(system_prompt, config.trace_log_max_chars),
+            },
+        )
+
+    approval_policy = _map_permission_mode_to_codex(
+        context.permissions.mode, context.permissions.auto_approve
+    )
+
+    try:
+        while True:
+            try:
+                user_input = await asyncio.to_thread(input, "> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            user_input = user_input.strip()
+            if not user_input:
+                continue
+            if user_input in {"/quit", "/exit"}:
+                break
+
+            _append_trace_log(
+                config,
+                {
+                    "type": "user_input",
+                    "timestamp": time.time(),
+                    "backend": "codex-mcp",
+                    "content": _truncate_log_value(user_input, config.trace_log_max_chars),
+                },
+            )
+
+            request_args: Dict[str, Any]
+            if latest_thread_id:
+                request_args = {"threadId": latest_thread_id, "prompt": user_input}
+                tool_name = "codex-reply"
+            else:
+                request_args = {
+                    "prompt": user_input,
+                    "model": config.model,
+                    "cwd": str(context.root_dir),
+                    "sandbox": "workspace-write",
+                    "approval-policy": approval_policy,
+                }
+                if system_prompt:
+                    request_args["base-instructions"] = system_prompt
+                tool_name = "codex"
+            request_id = str(uuid.uuid4())
+            stream_state[_req_key(request_id)] = {"streamed_any": False, "buffer": ""}
+            response = await _send_request(
+                "tools/call",
+                {"name": tool_name, "arguments": request_args},
+            )
+            result = response.get("result") or {}
+            if isinstance(result, dict):
+                structured = result.get("structuredContent") or result.get("structured_content") or {}
+                thread_id = structured.get("threadId") or structured.get("thread_id")
+                if thread_id:
+                    latest_thread_id = str(thread_id)
+                content = structured.get("content")
+                if not content:
+                    blocks = result.get("content") or []
+                    if isinstance(blocks, list):
+                        content = "\n".join(
+                            [
+                                str(block.get("text"))
+                                for block in blocks
+                                if isinstance(block, dict) and block.get("type") == "text"
+                            ]
+                        ).strip()
+                if not content:
+                    content = last_agent_message.get(_req_key(request_id), "")
+            else:
+                content = last_agent_message.get(_req_key(request_id), "")
+
+            state = stream_state.get(_req_key(request_id), {})
+            streamed_any = bool(state.get("streamed_any"))
+            if not content:
+                content = state.get("buffer", "")
+            if streamed_any:
+                print()
+            elif content:
+                print(content)
+
+            if content:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "assistant_output",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "content": _truncate_log_value(content, config.trace_log_max_chars),
+                        "session_id": latest_thread_id,
+                    },
+                )
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+
 async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
     if config.backend == "claude-sdk":
         await _run_claude_sdk_loop(context, config)
+        return
+    if config.backend == "codex-mcp":
+        await _run_codex_mcp_loop(context, config)
         return
     await _run_openai_loop(context, config)
