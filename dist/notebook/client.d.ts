@@ -70,6 +70,14 @@ export interface NebulaClientConfig {
     timeout?: number;
     /** Number of retries for transient errors (default: 3) */
     retries?: number;
+    /** Optional agent session ID for lock enforcement */
+    agentId?: string;
+    /** Optional client name for lock metadata */
+    clientName?: string;
+    /** Optional client version for lock metadata */
+    clientVersion?: string;
+    /** Auto-start agent session for write operations (default: true if agentId provided) */
+    autoStartAgentSession?: boolean;
 }
 export interface KernelSession {
     sessionId: string;
@@ -123,6 +131,12 @@ export declare class NebulaClient {
     private baseUrl;
     private timeout;
     private retries;
+    private agentId?;
+    private clientName?;
+    private clientVersion?;
+    private autoStartAgentSession;
+    private activeAgentSessions;
+    private agentSessionInFlight;
     constructor(config?: NebulaClientConfig);
     /**
      * Check if an error is retryable (network/connection errors)
@@ -253,6 +267,8 @@ export declare class NebulaClient {
      * From the agent's perspective, both modes behave identically.
      */
     applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>>;
+    private isWriteOperation;
+    private ensureAgentSession;
     /**
      * Read notebook through the operation router.
      *

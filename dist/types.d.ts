@@ -227,6 +227,14 @@ export interface EndAgentSessionOp {
     notebookPath: string;
 }
 /**
+ * Optional agent context attached to operations (used for lock enforcement)
+ */
+export interface AgentContextFields {
+    agentId?: string;
+    clientName?: string;
+    clientVersion?: string;
+}
+/**
  * Delete multiple cells by ID
  */
 export interface DeleteCellsOp {
@@ -287,7 +295,7 @@ export interface ExecuteCellOp {
 /**
  * Union of all notebook operations
  */
-export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp | StartAgentSessionOp | EndAgentSessionOp | DeleteCellsOp | InsertCellsOp | SearchCellsOp | ClearOutputsOp | ExecuteCellOp;
+export type NotebookOperation = (InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp | StartAgentSessionOp | EndAgentSessionOp | DeleteCellsOp | InsertCellsOp | SearchCellsOp | ClearOutputsOp | ExecuteCellOp) & AgentContextFields;
 /**
  * Result of applying an operation
  */

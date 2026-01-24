@@ -69,10 +69,20 @@ export class NebulaClient {
     baseUrl;
     timeout;
     retries;
+    agentId;
+    clientName;
+    clientVersion;
+    autoStartAgentSession;
+    activeAgentSessions = new Set();
+    agentSessionInFlight = new Map();
     constructor(config = {}) {
         this.baseUrl = config.baseUrl || 'http://localhost:8000';
         this.timeout = config.timeout || 30000;
         this.retries = config.retries ?? 3;
+        this.agentId = config.agentId;
+        this.clientName = config.clientName;
+        this.clientVersion = config.clientVersion;
+        this.autoStartAgentSession = config.autoStartAgentSession ?? Boolean(config.agentId);
     }
     /**
      * Check if an error is retryable (network/connection errors)
@@ -703,10 +713,51 @@ export class NebulaClient {
      * From the agent's perspective, both modes behave identically.
      */
     async applyOperation(operation) {
+        if (this.agentId) {
+            operation.agentId = this.agentId;
+            if (this.clientName) {
+                operation.clientName = this.clientName;
+            }
+            if (this.clientVersion) {
+                operation.clientVersion = this.clientVersion;
+            }
+            if (this.autoStartAgentSession && this.isWriteOperation(operation.type)) {
+                const ensured = await this.ensureAgentSession(operation.notebookPath);
+                if (!ensured.success) {
+                    return { success: false, error: ensured.error };
+                }
+            }
+        }
         return this.fetch('/api/notebook/operation', {
             method: 'POST',
             body: JSON.stringify({ operation }),
         });
+    }
+    isWriteOperation(opType) {
+        const readOnlyOps = new Set(['readCell', 'readCellOutput', 'searchCells', 'readNotebook']);
+        const sessionOps = new Set(['startAgentSession', 'endAgentSession']);
+        return !readOnlyOps.has(opType) && !sessionOps.has(opType);
+    }
+    async ensureAgentSession(path) {
+        if (!this.agentId) {
+            return { success: true, data: {} };
+        }
+        if (this.activeAgentSessions.has(path)) {
+            return { success: true, data: {} };
+        }
+        const inFlight = this.agentSessionInFlight.get(path);
+        if (inFlight) {
+            return inFlight;
+        }
+        const startPromise = this.startAgentSession(path, this.agentId);
+        this.agentSessionInFlight.set(path, startPromise);
+        try {
+            const result = await startPromise;
+            return result;
+        }
+        finally {
+            this.agentSessionInFlight.delete(path);
+        }
     }
     /**
      * Read notebook through the operation router.
@@ -1264,6 +1315,7 @@ export class NebulaClient {
         if (!opResult.success) {
             return { success: false, error: opResult.error };
         }
+        this.activeAgentSessions.add(path);
         return {
             success: true,
             data: {
@@ -1288,6 +1340,7 @@ export class NebulaClient {
         if (!opResult.success) {
             return { success: false, error: opResult.error };
         }
+        this.activeAgentSessions.delete(path);
         return {
             success: true,
             data: {

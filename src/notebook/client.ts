@@ -72,6 +72,14 @@ export interface NebulaClientConfig {
   timeout?: number;
   /** Number of retries for transient errors (default: 3) */
   retries?: number;
+  /** Optional agent session ID for lock enforcement */
+  agentId?: string;
+  /** Optional client name for lock metadata */
+  clientName?: string;
+  /** Optional client version for lock metadata */
+  clientVersion?: string;
+  /** Auto-start agent session for write operations (default: true if agentId provided) */
+  autoStartAgentSession?: boolean;
 }
 
 export interface KernelSession {
@@ -132,11 +140,21 @@ export class NebulaClient {
   private baseUrl: string;
   private timeout: number;
   private retries: number;
+  private agentId?: string;
+  private clientName?: string;
+  private clientVersion?: string;
+  private autoStartAgentSession: boolean;
+  private activeAgentSessions: Set<string> = new Set();
+  private agentSessionInFlight: Map<string, Promise<ToolResult<{ warning?: string }>>> = new Map();
 
   constructor(config: NebulaClientConfig = {}) {
     this.baseUrl = config.baseUrl || 'http://localhost:8000';
     this.timeout = config.timeout || 30000;
     this.retries = config.retries ?? 3;
+    this.agentId = config.agentId;
+    this.clientName = config.clientName;
+    this.clientVersion = config.clientVersion;
+    this.autoStartAgentSession = config.autoStartAgentSession ?? Boolean(config.agentId);
   }
 
   /**
@@ -900,10 +918,53 @@ export class NebulaClient {
    * From the agent's perspective, both modes behave identically.
    */
   async applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>> {
+    if (this.agentId) {
+      (operation as import('../types.js').NotebookOperation & import('../types.js').AgentContextFields).agentId = this.agentId;
+      if (this.clientName) {
+        (operation as import('../types.js').NotebookOperation & import('../types.js').AgentContextFields).clientName = this.clientName;
+      }
+      if (this.clientVersion) {
+        (operation as import('../types.js').NotebookOperation & import('../types.js').AgentContextFields).clientVersion = this.clientVersion;
+      }
+      if (this.autoStartAgentSession && this.isWriteOperation(operation.type)) {
+        const ensured = await this.ensureAgentSession(operation.notebookPath);
+        if (!ensured.success) {
+          return { success: false, error: ensured.error };
+        }
+      }
+    }
+
     return this.fetch<import('../types.js').OperationResult>('/api/notebook/operation', {
       method: 'POST',
       body: JSON.stringify({ operation }),
     });
+  }
+
+  private isWriteOperation(opType: string): boolean {
+    const readOnlyOps = new Set(['readCell', 'readCellOutput', 'searchCells', 'readNotebook']);
+    const sessionOps = new Set(['startAgentSession', 'endAgentSession']);
+    return !readOnlyOps.has(opType) && !sessionOps.has(opType);
+  }
+
+  private async ensureAgentSession(path: string): Promise<ToolResult<{ warning?: string }>> {
+    if (!this.agentId) {
+      return { success: true, data: {} };
+    }
+    if (this.activeAgentSessions.has(path)) {
+      return { success: true, data: {} };
+    }
+    const inFlight = this.agentSessionInFlight.get(path);
+    if (inFlight) {
+      return inFlight;
+    }
+    const startPromise = this.startAgentSession(path, this.agentId);
+    this.agentSessionInFlight.set(path, startPromise);
+    try {
+      const result = await startPromise;
+      return result;
+    } finally {
+      this.agentSessionInFlight.delete(path);
+    }
   }
 
   /**
@@ -1684,6 +1745,7 @@ export class NebulaClient {
     if (!opResult.success) {
       return { success: false, error: opResult.error };
     }
+    this.activeAgentSessions.add(path);
 
     return {
       success: true,
@@ -1715,6 +1777,7 @@ export class NebulaClient {
     if (!opResult.success) {
       return { success: false, error: opResult.error };
     }
+    this.activeAgentSessions.delete(path);
 
     return {
       success: true,

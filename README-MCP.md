@@ -107,6 +107,10 @@ insert_cell(path="/local/notebook.ipynb", ...)
 - All tools automatically use the current connection
 - Simple and predictable - no per-notebook URL tracking
 
+### Agent sessions and locking
+
+Write operations require an agent session. The MCP server automatically creates a session (using a stable MCP-scoped ID) the first time it performs a write on a notebook, so you don't have to call it manually. You can still call `start_agent_session`/`end_agent_session` explicitly if you want tighter control over lock lifetimes.
+
 ## Available MCP Tools
 
 Once connected, Claude Code can use these tools:

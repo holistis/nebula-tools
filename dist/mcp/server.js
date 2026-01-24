@@ -5,12 +5,16 @@
  * Implements the Model Context Protocol over stdio (JSON-RPC 2.0).
  */
 import * as readline from 'readline';
+import { randomUUID } from 'crypto';
 import { NebulaClient } from '../notebook/client.js';
 import { getToolDefinitions, executeToolForMCP } from '../tools/index.js';
 export class NebulaMCPServer {
     client;
     currentUrl;
     defaultUrl;
+    agentId;
+    clientName = 'nebula-mcp';
+    clientVersion = '0.1.0';
     supportedProtocols = ['2025-06-18', '2024-11-05'];
     defaultProtocol = '2024-11-05';
     constructor() {
@@ -18,7 +22,14 @@ export class NebulaMCPServer {
         // Default to 3000 (frontend dev server) which proxies to backend
         this.defaultUrl = process.env.NEBULA_URL || 'http://localhost:3000';
         this.currentUrl = this.defaultUrl;
-        this.client = new NebulaClient({ baseUrl: this.currentUrl });
+        this.agentId = randomUUID();
+        this.client = new NebulaClient({
+            baseUrl: this.currentUrl,
+            agentId: this.agentId,
+            clientName: this.clientName,
+            clientVersion: this.clientVersion,
+            autoStartAgentSession: true,
+        });
         // Log configuration on startup (to stderr, not stdout which is for JSON-RPC)
         console.error(`[Nebula MCP] Default URL: ${this.defaultUrl}`);
         if (!process.env.NEBULA_URL) {
@@ -34,7 +45,13 @@ export class NebulaMCPServer {
         const url = baseUrl || this.defaultUrl;
         if (url !== this.currentUrl) {
             this.currentUrl = url;
-            this.client = new NebulaClient({ baseUrl: url });
+            this.client = new NebulaClient({
+                baseUrl: url,
+                agentId: this.agentId,
+                clientName: this.clientName,
+                clientVersion: this.clientVersion,
+                autoStartAgentSession: true,
+            });
             console.error(`[Nebula MCP] Connected to: ${url}`);
         }
         else {
