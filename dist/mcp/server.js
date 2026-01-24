@@ -11,6 +11,8 @@ export class NebulaMCPServer {
     client;
     currentUrl;
     defaultUrl;
+    supportedProtocols = ['2025-06-18', '2024-11-05'];
+    defaultProtocol = '2024-11-05';
     constructor() {
         // Environment variable: NEBULA_URL (e.g., http://localhost:3000)
         // Default to 3000 (frontend dev server) which proxies to backend
@@ -47,15 +49,27 @@ export class NebulaMCPServer {
     }
     async handleRequest(request) {
         const { id, method, params } = request;
+        const responseId = id ?? 0;
         try {
             let result;
             switch (method) {
                 case 'initialize':
-                    result = {
-                        protocolVersion: '2024-11-05',
-                        serverInfo: { name: 'nebula-mcp', version: '0.1.0' },
-                        capabilities: { tools: {} },
-                    };
+                    {
+                        const requestedProtocol = params && typeof params.protocolVersion === 'string'
+                            ? params.protocolVersion
+                            : undefined;
+                        const protocolVersion = requestedProtocol && this.supportedProtocols.includes(requestedProtocol)
+                            ? requestedProtocol
+                            : this.defaultProtocol;
+                        if (requestedProtocol && requestedProtocol !== protocolVersion) {
+                            console.error(`[Nebula MCP] Unsupported protocolVersion "${requestedProtocol}", falling back to ${protocolVersion}`);
+                        }
+                        result = {
+                            protocolVersion,
+                            serverInfo: { name: 'nebula-mcp', version: '0.1.0' },
+                            capabilities: { tools: {} },
+                        };
+                    }
                     break;
                 case 'tools/list':
                     // Get tool definitions from the unified tools module
@@ -67,21 +81,21 @@ export class NebulaMCPServer {
                     break;
                 case 'notifications/initialized':
                     // Client notification, no response needed
-                    return { jsonrpc: '2.0', id, result: {} };
+                    return null;
                 default:
                     return {
                         jsonrpc: '2.0',
-                        id,
+                        id: responseId,
                         error: { code: -32601, message: `Method not found: ${method}` },
                     };
             }
-            return { jsonrpc: '2.0', id, result };
+            return { jsonrpc: '2.0', id: responseId, result };
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             return {
                 jsonrpc: '2.0',
-                id,
+                id: responseId,
                 error: { code: -32603, message: `Internal error: ${message}` },
             };
         }
@@ -122,15 +136,17 @@ export class NebulaMCPServer {
         console.error('Nebula MCP Server Started');
         console.error(`Connected to: ${this.currentUrl}`);
         console.error(`Use connect_server tool to switch instances`);
-        console.error(`Protocol: Model Context Protocol (MCP) 2024-11-05`);
+        console.error(`Protocol: Model Context Protocol (MCP) ${this.defaultProtocol} (supports ${this.supportedProtocols.join(', ')})`);
         console.error('='.repeat(60));
         // Read JSON-RPC messages from stdin
         rl.on('line', async (line) => {
             try {
                 const request = JSON.parse(line);
                 const response = await this.handleRequest(request);
-                // Write response to stdout
-                process.stdout.write(JSON.stringify(response) + '\n');
+                if (response) {
+                    // Write response to stdout
+                    process.stdout.write(JSON.stringify(response) + '\n');
+                }
             }
             catch (error) {
                 // Invalid JSON, send parse error
