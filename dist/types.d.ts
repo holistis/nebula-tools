@@ -303,6 +303,8 @@ export type NotebookOperation = (InsertCellOp | DeleteCellOp | UpdateContentOp |
  */
 export interface OperationResult {
     success: boolean;
+    /** Backend that served the operation */
+    backend?: 'ui' | 'headless';
     /** Actual cell ID (may differ from requested if auto-fixed) */
     cellId?: string;
     /** Cell index after operation */

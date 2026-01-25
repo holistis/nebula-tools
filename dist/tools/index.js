@@ -72,26 +72,37 @@ export async function executeToolForMCP(name, params, client) {
         };
     }
     try {
+        // Clear any stale backend info before executing the tool
+        client.consumeLastBackend();
         const result = await tool.execute(params, client);
+        const backend = client.consumeLastBackend();
         // Use custom formatter if available, otherwise default JSON
         if (tool.formatForMCP) {
+            const content = tool.formatForMCP(result);
+            if (backend) {
+                content.push({ type: 'text', text: `Backend: ${backend}` });
+            }
             return {
-                content: tool.formatForMCP(result),
+                content,
                 isError: !result.success,
             };
         }
         // Default formatting
         if (!result.success) {
-            return {
-                content: [{ type: 'text', text: `Error: ${result.error}` }],
-                isError: true,
-            };
+            const content = [{ type: 'text', text: `Error: ${result.error}` }];
+            if (backend) {
+                content.push({ type: 'text', text: `Backend: ${backend}` });
+            }
+            return { content, isError: true };
         }
-        return {
-            content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }],
-        };
+        const content = [{ type: 'text', text: JSON.stringify(result.data, null, 2) }];
+        if (backend) {
+            content.push({ type: 'text', text: `Backend: ${backend}` });
+        }
+        return { content };
     }
     catch (error) {
+        client.consumeLastBackend();
         const message = error instanceof Error ? error.message : String(error);
         return {
             content: [{ type: 'text', text: `Tool execution failed: ${message}` }],

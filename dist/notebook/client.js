@@ -75,6 +75,7 @@ export class NebulaClient {
     autoStartAgentSession;
     activeAgentSessions = new Set();
     agentSessionInFlight = new Map();
+    lastBackend;
     constructor(config = {}) {
         this.baseUrl = config.baseUrl || 'http://localhost:8000';
         this.timeout = config.timeout || 30000;
@@ -83,6 +84,16 @@ export class NebulaClient {
         this.clientName = config.clientName;
         this.clientVersion = config.clientVersion;
         this.autoStartAgentSession = config.autoStartAgentSession ?? Boolean(config.agentId);
+    }
+    recordBackend(backend) {
+        if (backend) {
+            this.lastBackend = backend;
+        }
+    }
+    consumeLastBackend() {
+        const backend = this.lastBackend;
+        this.lastBackend = undefined;
+        return backend;
     }
     /**
      * Check if an error is retryable (network/connection errors)
@@ -728,10 +739,14 @@ export class NebulaClient {
                 }
             }
         }
-        return this.fetch('/api/notebook/operation', {
+        const result = await this.fetch('/api/notebook/operation', {
             method: 'POST',
             body: JSON.stringify({ operation }),
         });
+        if (result.success) {
+            this.recordBackend(result.data?.backend);
+        }
+        return result;
     }
     isWriteOperation(opType) {
         const readOnlyOps = new Set(['readCell', 'readCellOutput', 'searchCells', 'readNotebook']);
@@ -789,6 +804,7 @@ export class NebulaClient {
         }
         // Router returns response with success/data/error structure
         const routerResult = result.data;
+        this.recordBackend(routerResult.backend);
         if (!routerResult.success) {
             return { success: false, error: routerResult.error };
         }

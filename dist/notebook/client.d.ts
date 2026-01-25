@@ -137,7 +137,10 @@ export declare class NebulaClient {
     private autoStartAgentSession;
     private activeAgentSessions;
     private agentSessionInFlight;
+    private lastBackend?;
     constructor(config?: NebulaClientConfig);
+    private recordBackend;
+    consumeLastBackend(): 'ui' | 'headless' | undefined;
     /**
      * Check if an error is retryable (network/connection errors)
      */

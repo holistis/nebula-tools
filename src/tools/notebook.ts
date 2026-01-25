@@ -1017,7 +1017,7 @@ export const startAgentSessionTool: Tool<StartAgentSessionParams, StartAgentSess
     name: 'start_agent_session',
     description: `Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. IMPORTANT: call connect_server first if you're not sure you're on the correct Nebula URL (tools default to NEBULA_URL or http://localhost:3000).
 
-This call validates that the notebook path exists; it will error if the path is wrong or missing.`,
+This call validates that the notebook path exists; it will error if the path is wrong or missing.
 
 IMPORTANT: Call this at the START of each response before any notebook operations, and call end_agent_session at the END of each response. This ensures the notebook is only locked while you're actively working on it.
 
