@@ -10,8 +10,8 @@ export declare class NebulaMCPServer {
     private currentUrl;
     private defaultUrl;
     private agentId;
-    private readonly clientName;
-    private readonly clientVersion;
+    private clientName;
+    private clientVersion;
     private readonly supportedProtocols;
     private readonly defaultProtocol;
     constructor();

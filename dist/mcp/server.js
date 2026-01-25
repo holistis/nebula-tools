@@ -14,17 +14,17 @@ export class NebulaMCPServer {
     defaultUrl;
     agentId;
     clientName;
-    clientVersion = '0.1.0';
+    clientVersion;
     supportedProtocols = ['2025-06-18', '2024-11-05'];
     defaultProtocol = '2024-11-05';
     constructor() {
-        // Environment variables:
-        // - NEBULA_URL: Server URL (e.g., http://localhost:3000)
-        // - NEBULA_CLIENT_NAME: Client app name for lock display (e.g., "Claude Code", "Cursor")
+        // Environment variable: NEBULA_URL (e.g., http://localhost:3000)
         this.defaultUrl = process.env.NEBULA_URL || 'http://localhost:3000';
         this.currentUrl = this.defaultUrl;
         this.agentId = randomUUID();
-        this.clientName = process.env.NEBULA_CLIENT_NAME || 'MCP Agent';
+        // clientName will be set from MCP initialize handshake
+        this.clientName = 'MCP Agent';
+        this.clientVersion = '0.1.0';
         this.client = new NebulaClient({
             baseUrl: this.currentUrl,
             agentId: this.agentId,
@@ -33,11 +33,8 @@ export class NebulaMCPServer {
             autoStartAgentSession: true,
         });
         // Log configuration on startup (to stderr, not stdout which is for JSON-RPC)
-        console.error(`[Nebula MCP] Client: ${this.clientName} (${this.agentId.slice(0, 8)})`);
+        console.error(`[Nebula MCP] Agent ID: ${this.agentId.slice(0, 8)}`);
         console.error(`[Nebula MCP] Default URL: ${this.defaultUrl}`);
-        if (!process.env.NEBULA_URL) {
-            console.error(`[Nebula MCP] Using default URL (NEBULA_URL not set)`);
-        }
     }
     /**
      * Connect to a Nebula server
@@ -82,6 +79,21 @@ export class NebulaMCPServer {
                             : this.defaultProtocol;
                         if (requestedProtocol && requestedProtocol !== protocolVersion) {
                             console.error(`[Nebula MCP] Unsupported protocolVersion "${requestedProtocol}", falling back to ${protocolVersion}`);
+                        }
+                        // Capture client info from MCP handshake
+                        const clientInfo = params?.clientInfo;
+                        if (clientInfo?.name) {
+                            this.clientName = clientInfo.name;
+                            this.clientVersion = clientInfo.version || '0.0.0';
+                            // Recreate client with actual client name
+                            this.client = new NebulaClient({
+                                baseUrl: this.currentUrl,
+                                agentId: this.agentId,
+                                clientName: this.clientName,
+                                clientVersion: this.clientVersion,
+                                autoStartAgentSession: true,
+                            });
+                            console.error(`[Nebula MCP] Client identified: ${this.clientName} v${this.clientVersion}`);
                         }
                         result = {
                             protocolVersion,
