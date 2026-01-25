@@ -972,7 +972,11 @@ export interface ConnectServerResult {
 export const connectServerTool: Tool<ConnectServerParams, ConnectServerResult> = {
   definition: {
     name: 'connect_server',
-    description: 'Connect to a Nebula server. All subsequent operations will use this connection. Use this to switch between different Nebula instances (e.g., local vs SSH-tunneled remote).',
+    description: `Connect to a Nebula server. Call this ONCE at the start of your session if you need to use a non-default server (e.g., SSH-tunneled remote). All subsequent operations will use this connection.
+
+RECOMMENDED WORKFLOW:
+1. connect_server (once, if needed for non-default URL)
+2. For each response: start_agent_session → operations → end_agent_session`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1012,7 +1016,12 @@ export interface StartAgentSessionResult {
 export const startAgentSessionTool: Tool<StartAgentSessionParams, StartAgentSessionResult> = {
   definition: {
     name: 'start_agent_session',
-    description: 'Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. Use connect_server first if you need to work with a different Nebula instance.',
+    description: `Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. Use connect_server first if you need to work with a different Nebula instance.
+
+IMPORTANT: Call this at the START of each response before any notebook operations, and call end_agent_session at the END of each response. This ensures the notebook is only locked while you're actively working on it.
+
+Example flow for each response:
+  start_agent_session → insert_cell/update_cell/execute_cell/etc → end_agent_session`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1066,7 +1075,9 @@ export interface EndAgentSessionResult {
 export const endAgentSessionTool: Tool<EndAgentSessionParams, EndAgentSessionResult> = {
   definition: {
     name: 'end_agent_session',
-    description: 'End an agent session, unlocking the notebook for user edits. Always call this when agent work is complete.',
+    description: `End an agent session, unlocking the notebook for user edits. Always call this at the END of each response after completing all notebook operations.
+
+IMPORTANT: Always call this before finishing your response, even if operations failed. This ensures the notebook is unlocked for the user.`,
     inputSchema: {
       type: 'object',
       properties: {

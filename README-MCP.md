@@ -65,6 +65,46 @@ After editing the config:
 # Then restart your client
 ```
 
+## Agent Workflow (IMPORTANT)
+
+When working with Nebula notebooks, agents should follow this workflow pattern:
+
+### Session Setup (once per conversation)
+```
+connect_server(base_url="http://localhost:4000")  // Only if using non-default URL
+```
+
+### Each Response Pattern
+```
+start_agent_session(path="/path/to/notebook.ipynb")
+  ↓
+[perform all notebook operations]
+  - read_notebook, read_cell, read_output
+  - insert_cell, update_cell, delete_cell
+  - execute_cell
+  - etc.
+  ↓
+end_agent_session(path="/path/to/notebook.ipynb")
+```
+
+### Why This Pattern?
+- **Locking**: `start_agent_session` locks the notebook, preventing user edits during agent work
+- **UI Feedback**: Users see a badge showing which agent is working and what it's doing
+- **Clean Handoff**: `end_agent_session` unlocks the notebook so users can edit again
+- **Per-Response**: Start/end in EVERY response ensures the lock isn't held between turns
+
+### Example: Multi-step Analysis
+```
+Response 1:
+  start_agent_session → insert_cell (imports) → execute_cell → end_agent_session
+
+Response 2:
+  start_agent_session → insert_cell (analysis) → execute_cell → read_output → end_agent_session
+
+Response 3:
+  start_agent_session → insert_cell (visualization) → execute_cell → end_agent_session
+```
+
 ## Switching Between Nebula Instances
 
 You can switch between different Nebula instances using the `connect_server` tool. This is useful for:
