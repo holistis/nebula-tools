@@ -81,6 +81,8 @@ export class NebulaMCPServer {
                             console.error(`[Nebula MCP] Unsupported protocolVersion "${requestedProtocol}", falling back to ${protocolVersion}`);
                         }
                         // Capture client info from MCP handshake
+                        // Debug: log entire params to see what client sends
+                        console.error(`[Nebula MCP] Initialize params:`, JSON.stringify(params, null, 2));
                         const clientInfo = params?.clientInfo;
                         if (clientInfo?.name) {
                             this.clientName = clientInfo.name;

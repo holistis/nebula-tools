@@ -108,6 +108,8 @@ export class NebulaMCPServer {
             }
 
             // Capture client info from MCP handshake
+            // Debug: log entire params to see what client sends
+            console.error(`[Nebula MCP] Initialize params:`, JSON.stringify(params, null, 2));
             const clientInfo = params?.clientInfo as { name?: string; version?: string } | undefined;
             if (clientInfo?.name) {
               this.clientName = clientInfo.name;
