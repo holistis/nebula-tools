@@ -13,16 +13,18 @@ export class NebulaMCPServer {
     currentUrl;
     defaultUrl;
     agentId;
-    clientName = 'nebula-mcp';
+    clientName;
     clientVersion = '0.1.0';
     supportedProtocols = ['2025-06-18', '2024-11-05'];
     defaultProtocol = '2024-11-05';
     constructor() {
-        // Environment variable: NEBULA_URL (e.g., http://localhost:3000)
-        // Default to 3000 (frontend dev server) which proxies to backend
+        // Environment variables:
+        // - NEBULA_URL: Server URL (e.g., http://localhost:3000)
+        // - NEBULA_CLIENT_NAME: Client app name for lock display (e.g., "Claude Code", "Cursor")
         this.defaultUrl = process.env.NEBULA_URL || 'http://localhost:3000';
         this.currentUrl = this.defaultUrl;
         this.agentId = randomUUID();
+        this.clientName = process.env.NEBULA_CLIENT_NAME || 'MCP Agent';
         this.client = new NebulaClient({
             baseUrl: this.currentUrl,
             agentId: this.agentId,
@@ -31,10 +33,10 @@ export class NebulaMCPServer {
             autoStartAgentSession: true,
         });
         // Log configuration on startup (to stderr, not stdout which is for JSON-RPC)
+        console.error(`[Nebula MCP] Client: ${this.clientName} (${this.agentId.slice(0, 8)})`);
         console.error(`[Nebula MCP] Default URL: ${this.defaultUrl}`);
         if (!process.env.NEBULA_URL) {
             console.error(`[Nebula MCP] Using default URL (NEBULA_URL not set)`);
-            console.error(`[Nebula MCP] Note: Default assumes frontend dev server on :3000 (proxies to backend)`);
         }
     }
     /**
