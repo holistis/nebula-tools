@@ -103,9 +103,8 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
-    const { path, cells, totalCells, backend } = result.data!;
-    const backendInfo = backend ? ` [${backend}]` : '';
-    const lines = [`Notebook: ${path} (${totalCells} cells)${backendInfo}\n`];
+    const { path, cells, totalCells } = result.data!;
+    const lines = [`Notebook: ${path} (${totalCells} cells)\n`];
     cells.forEach((cell, i) => lines.push(formatCellPreview(cell, i)));
     return [{ type: 'text', text: lines.join('\n') }];
   },
@@ -1016,7 +1015,9 @@ export interface StartAgentSessionResult {
 export const startAgentSessionTool: Tool<StartAgentSessionParams, StartAgentSessionResult> = {
   definition: {
     name: 'start_agent_session',
-    description: `Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. Use connect_server first if you need to work with a different Nebula instance.
+    description: `Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. IMPORTANT: call connect_server first if you're not sure you're on the correct Nebula URL (tools default to NEBULA_URL or http://localhost:3000).
+
+This call validates that the notebook path exists; it will error if the path is wrong or missing.`,
 
 IMPORTANT: Call this at the START of each response before any notebook operations, and call end_agent_session at the END of each response. This ensures the notebook is only locked while you're actively working on it.
 

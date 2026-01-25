@@ -71,7 +71,9 @@ When working with Nebula notebooks, agents should follow this workflow pattern:
 
 ### Session Setup (once per conversation)
 ```
-connect_server(base_url="http://localhost:4000")  // Only if using non-default URL
+# Always call connect_server first unless you are 100% sure the default URL is correct.
+# Default is NEBULA_URL or http://localhost:3000.
+connect_server(base_url="http://localhost:4000")  // Required if your UI is at :4000
 ```
 
 ### Each Response Pattern
@@ -92,6 +94,7 @@ end_agent_session(path="/path/to/notebook.ipynb")
 - **UI Feedback**: Users see a badge showing which agent is working and what it's doing
 - **Clean Handoff**: `end_agent_session` unlocks the notebook so users can edit again
 - **Per-Response**: Start/end in EVERY response ensures the lock isn't held between turns
+- **Path validation**: `start_agent_session` fails if the notebook path doesn't exist (typos are caught early)
 
 ### Example: Multi-step Analysis
 ```

@@ -146,6 +146,7 @@ export class NebulaClient {
   private autoStartAgentSession: boolean;
   private activeAgentSessions: Set<string> = new Set();
   private agentSessionInFlight: Map<string, Promise<ToolResult<{ warning?: string }>>> = new Map();
+  private lastBackend?: 'ui' | 'headless';
 
   constructor(config: NebulaClientConfig = {}) {
     this.baseUrl = config.baseUrl || 'http://localhost:8000';
@@ -155,6 +156,18 @@ export class NebulaClient {
     this.clientName = config.clientName;
     this.clientVersion = config.clientVersion;
     this.autoStartAgentSession = config.autoStartAgentSession ?? Boolean(config.agentId);
+  }
+
+  private recordBackend(backend?: 'ui' | 'headless'): void {
+    if (backend) {
+      this.lastBackend = backend;
+    }
+  }
+
+  consumeLastBackend(): 'ui' | 'headless' | undefined {
+    const backend = this.lastBackend;
+    this.lastBackend = undefined;
+    return backend;
   }
 
   /**
@@ -934,10 +947,14 @@ export class NebulaClient {
       }
     }
 
-    return this.fetch<import('../types.js').OperationResult>('/api/notebook/operation', {
+    const result = await this.fetch<import('../types.js').OperationResult>('/api/notebook/operation', {
       method: 'POST',
       body: JSON.stringify({ operation }),
     });
+    if (result.success) {
+      this.recordBackend(result.data?.backend);
+    }
+    return result;
   }
 
   private isWriteOperation(opType: string): boolean {
@@ -1020,6 +1037,7 @@ export class NebulaClient {
 
     // Router returns response with success/data/error structure
     const routerResult = result.data!;
+    this.recordBackend(routerResult.backend);
     if (!routerResult.success) {
       return { success: false, error: routerResult.error };
     }
