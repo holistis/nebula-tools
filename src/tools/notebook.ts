@@ -51,6 +51,8 @@ export interface ReadNotebookResult {
   path: string;
   cells: NotebookCell[];
   totalCells: number;
+  /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
+  backend?: 'ui' | 'headless';
 }
 
 export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
@@ -92,6 +94,7 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
         path: params.path,
         cells: notebook.cells,
         totalCells: notebook.cells.length,
+        backend: notebook.backend,
       },
     };
   },
@@ -100,8 +103,9 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
-    const { path, cells, totalCells } = result.data!;
-    const lines = [`Notebook: ${path} (${totalCells} cells)\n`];
+    const { path, cells, totalCells, backend } = result.data!;
+    const backendInfo = backend ? ` [${backend}]` : '';
+    const lines = [`Notebook: ${path} (${totalCells} cells)${backendInfo}\n`];
     cells.forEach((cell, i) => lines.push(formatCellPreview(cell, i)));
     return [{ type: 'text', text: lines.join('\n') }];
   },

@@ -18,6 +18,8 @@ export interface ReadNotebookResult {
     path: string;
     cells: NotebookCell[];
     totalCells: number;
+    /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
+    backend?: 'ui' | 'headless';
 }
 export declare const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult>;
 export interface ReadCellParams {

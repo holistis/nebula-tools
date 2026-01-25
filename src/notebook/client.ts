@@ -985,6 +985,7 @@ export class NebulaClient {
   ): Promise<ToolResult<Notebook>> {
     interface RouterReadResult {
       success: boolean;
+      backend?: 'ui' | 'headless';
       data?: {
         path: string;
         cells: NotebookCell[];
@@ -1029,6 +1030,7 @@ export class NebulaClient {
         path: routerResult.data!.path,
         cells: routerResult.data!.cells,
         metadata: routerResult.data!.metadata,
+        backend: routerResult.backend,
       },
     };
   }

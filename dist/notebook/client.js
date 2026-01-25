@@ -798,6 +798,7 @@ export class NebulaClient {
                 path: routerResult.data.path,
                 cells: routerResult.data.cells,
                 metadata: routerResult.data.metadata,
+                backend: routerResult.backend,
             },
         };
     }

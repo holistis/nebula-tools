@@ -105,6 +105,8 @@ export interface Notebook {
   path: string;
   cells: NotebookCell[];
   metadata?: Record<string, unknown>;
+  /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
+  backend?: 'ui' | 'headless';
 }
 
 // ============================================================================
