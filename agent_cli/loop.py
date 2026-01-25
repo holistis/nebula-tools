@@ -554,6 +554,33 @@ def _message_content(message: Any) -> str:
     return getattr(message, "content", "") or ""
 
 
+def _message_reasoning_summary(message: Any) -> str:
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        reasoning = message.get("reasoning")
+        if isinstance(reasoning, dict):
+            for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+                value = reasoning.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+        for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    reasoning = getattr(message, "reasoning", None)
+    if isinstance(reasoning, dict):
+        for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+            value = reasoning.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+        value = getattr(message, key, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def _assistant_blocks_text(blocks: Any) -> str:
     if not blocks:
         return ""
@@ -619,6 +646,34 @@ def _extract_stream_thinking(event: Any) -> str:
                 return inner_delta["thinking"]
     if isinstance(event.get("thinking"), str):
         return event["thinking"]
+    return ""
+
+
+def _extract_reasoning_summary_delta(delta: Any) -> str:
+    if not delta:
+        return ""
+    if isinstance(delta, dict):
+        for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+            value = delta.get(key)
+            if isinstance(value, str) and value:
+                return value
+        reasoning = delta.get("reasoning")
+        if isinstance(reasoning, dict):
+            for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+                value = reasoning.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return ""
+    reasoning = getattr(delta, "reasoning", None)
+    if isinstance(reasoning, dict):
+        for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+            value = reasoning.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+        value = getattr(delta, key, None)
+        if isinstance(value, str) and value:
+            return value
     return ""
 
 
@@ -1266,6 +1321,7 @@ def _stream_openai_message(
         payload["tool_choice"] = "auto"
     stream = client.chat.completions.create(**payload)
     content_parts: List[str] = []
+    reasoning_summary_parts: List[str] = []
     tool_calls: Dict[int, Dict[str, Any]] = {}
     for chunk in stream:
         try:
@@ -1273,6 +1329,9 @@ def _stream_openai_message(
         except Exception:
             continue
         delta = getattr(choice, "delta", None) or {}
+        summary_delta = _extract_reasoning_summary_delta(delta)
+        if summary_delta:
+            reasoning_summary_parts.append(summary_delta)
         text = getattr(delta, "content", None) if not isinstance(delta, dict) else delta.get("content")
         if text:
             content_parts.append(text)
@@ -1305,10 +1364,12 @@ def _stream_openai_message(
                         if args:
                             entry["function"]["arguments"] += args
     ordered_calls = [tool_calls[idx] for idx in sorted(tool_calls.keys())]
+    reasoning_summary = "".join(reasoning_summary_parts).strip()
     return {
         "role": "assistant",
         "content": "".join(content_parts),
         "tool_calls": ordered_calls if ordered_calls else None,
+        "reasoning_summary": reasoning_summary or None,
     }
 
 
@@ -1523,6 +1584,7 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
                     else:
                         raise
                 tool_calls = _parse_tool_calls(message)
+                reasoning_summary = _message_reasoning_summary(message)
                 _append_trace_log(
                     config,
                     {
@@ -1535,6 +1597,18 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
                         "tool_calls": _truncate_nested(tool_calls, config.trace_log_max_chars),
                     },
                 )
+                if reasoning_summary:
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "reasoning_summary",
+                            "timestamp": time.time(),
+                            "backend": "openai-or-litellm",
+                            "content": _truncate_log_value(
+                                reasoning_summary, config.trace_log_max_chars
+                            ),
+                        },
+                    )
                 serialized_calls = None
                 if tool_calls:
                     serialized_calls = [
@@ -2231,6 +2305,24 @@ async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
                         "timestamp": time.time(),
                         "backend": "codex-mcp",
                         "content": _truncate_log_value(str(delta), config.trace_log_max_chars),
+                    },
+                )
+            return
+        if event_type and "reasoning_summary" in str(event_type):
+            summary = msg.get("delta") or msg.get("summary") or msg.get("text")
+            if not summary:
+                reasoning = msg.get("reasoning")
+                if isinstance(reasoning, dict):
+                    summary = reasoning.get("summary") or reasoning.get("summary_text") or reasoning.get("summaryText")
+            if summary:
+                summary_type = "reasoning_summary_delta" if "delta" in str(event_type) else "reasoning_summary"
+                _append_trace_log(
+                    config,
+                    {
+                        "type": summary_type,
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "content": _truncate_log_value(str(summary), config.trace_log_max_chars),
                     },
                 )
             return
