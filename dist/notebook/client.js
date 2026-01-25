@@ -1306,7 +1306,9 @@ export class NebulaClient {
         const operation = {
             type: 'startAgentSession',
             notebookPath: path,
-            agentId,
+            agentId: agentId || this.agentId,
+            clientName: this.clientName,
+            clientVersion: this.clientVersion,
         };
         const result = await this.applyOperation(operation);
         if (!result.success) {

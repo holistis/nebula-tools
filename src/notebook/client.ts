@@ -1732,10 +1732,12 @@ export class NebulaClient {
     warning?: string;
     previousSessionDuration?: number;
   }>> {
-    const operation: import('../types.js').StartAgentSessionOp = {
+    const operation: import('../types.js').StartAgentSessionOp & import('../types.js').AgentContextFields = {
       type: 'startAgentSession',
       notebookPath: path,
-      agentId,
+      agentId: agentId || this.agentId,
+      clientName: this.clientName,
+      clientVersion: this.clientVersion,
     };
 
     const result = await this.applyOperation(operation);
