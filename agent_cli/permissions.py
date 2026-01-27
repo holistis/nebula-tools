@@ -67,6 +67,7 @@ class AppContext:
     todos: list[dict[str, str]] = field(default_factory=list)
     user_context: dict[str, str] = field(default_factory=dict)
     system_context: dict[str, str] = field(default_factory=dict)
+    mcp_manager: Optional[Any] = None
     trace_logger: Optional[Callable[[dict[str, Any]], None]] = None
     tool_logger: Optional[Callable[[dict[str, Any]], None]] = None
     trace_log_max_chars: int = 10_000

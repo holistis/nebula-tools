@@ -1,6 +1,6 @@
 # Nebula CLI Agent (minimal Claude-style loop)
 
-This is a minimal, CLI-only agent that reproduces the core behavior of the default Claude Code loop (tool-call loop, micro/auto compaction, fallback), without MCP or hooks. It uses the OpenAI SDK for model calls and local filesystem tools implemented in Python.
+This is a minimal, CLI-only agent that reproduces the core behavior of the default Claude Code loop (tool-call loop, micro/auto compaction, fallback) with optional MCP support. It uses the OpenAI SDK for model calls and local filesystem tools implemented in Python.
 
 ## Requirements
 - Python 3.10+
@@ -60,8 +60,38 @@ Options:
 - `--non-interactive`: use non-interactive base prompt selection
 ```
 
+## Config files
+Agent CLI reads default JSON config files if they exist:
+- User config: `~/.agent_cli.json`
+- Project config: `./.agent_cli.json` (current working directory)
+
+Currently only the `mcp` key is read from these files. Command-line flags or env vars
+(`--mcp-clients`, `--mcp-clients-file`, `CLAUDE_MCP_CLIENTS`, `CLAUDE_MCP_CLIENTS_FILE`)
+take precedence. If both config files include MCP settings, the project config overrides
+server entries with the same name and appends any client definitions.
+
+Example:
+```json
+{
+  "mcp": {
+    "servers": {
+      "nebula": {
+        "type": "sse",
+        "url": "http://localhost:4000/api/mcp"
+      }
+    },
+    "clients": [
+      {
+        "name": "nebula",
+        "instructions": "Use the notebook tools for data analysis."
+      }
+    ]
+  }
+}
+```
+
 ## Notes
-- No MCP servers or hooks are used.
+- MCP servers are optional and only used when configured.
 - Tools implemented: Read, Write, Edit, Grep, Glob, LS, Bash, Task, TaskOutput, AskUserQuestion, TodoWrite.
 - Permission gating is handled inside tools (simple CLI prompt).
 - System prompt is loaded from `agent_cli/prompts/system_prompt.md` by default.

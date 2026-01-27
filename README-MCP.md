@@ -12,7 +12,26 @@ cd /path/to/nebula-notebook
 npm run server
 ```
 
-### 2. Configure Claude Code
+### 2. Automated setup (Recommended)
+
+Run the interactive setup script to configure all detected clients:
+
+```bash
+npm run setup-mcp
+```
+
+**Supported tools** (auto-detected):
+- Claude Code
+- Claude Desktop
+- Cursor IDE
+- Gemini CLI
+- Codex CLI
+- VS Code / GitHub Copilot (workspace via `.vscode/mcp.json`)
+- Antigravity (global config if present)
+
+The setup script is idempotent and will skip configs that already contain the correct `nebula-notebook` entry.
+
+### 3. Manual setup (Claude Code example)
 
 Add to your `~/.claude.json`:
 
@@ -37,13 +56,56 @@ Add to your `~/.claude.json`:
 - ✅ For SSH-forwarded servers, use `http://localhost:FORWARDED_PORT`
 - ✅ For direct backend access, use `http://localhost:8000` (or your backend port)
 
-### 3. Restart Claude Code
+### 4. Restart your AI client
 
 After editing the config:
 ```bash
 # In Claude Code terminal
 /exit
-# Then restart Claude Code
+# Then restart your client
+```
+
+## Agent Workflow (IMPORTANT)
+
+When working with Nebula notebooks, agents should follow this workflow pattern:
+
+### Session Setup (once per conversation)
+```
+# Always call connect_server first unless you are 100% sure the default URL is correct.
+# Default is NEBULA_URL or http://localhost:3000.
+connect_server(base_url="http://localhost:4000")  // Required if your UI is at :4000
+```
+
+### Each Response Pattern
+```
+start_agent_session(path="/path/to/notebook.ipynb")
+  ↓
+[perform all notebook operations]
+  - read_notebook, read_cell, read_output
+  - insert_cell, update_cell, delete_cell
+  - execute_cell
+  - etc.
+  ↓
+end_agent_session(path="/path/to/notebook.ipynb")
+```
+
+### Why This Pattern?
+- **Locking**: `start_agent_session` locks the notebook, preventing user edits during agent work
+- **UI Feedback**: Users see a badge showing which agent is working and what it's doing
+- **Clean Handoff**: `end_agent_session` unlocks the notebook so users can edit again
+- **Per-Response**: Start/end in EVERY response ensures the lock isn't held between turns
+- **Path validation**: `start_agent_session` fails if the notebook path doesn't exist (typos are caught early)
+
+### Example: Multi-step Analysis
+```
+Response 1:
+  start_agent_session → insert_cell (imports) → execute_cell → end_agent_session
+
+Response 2:
+  start_agent_session → insert_cell (analysis) → execute_cell → read_output → end_agent_session
+
+Response 3:
+  start_agent_session → insert_cell (visualization) → execute_cell → end_agent_session
 ```
 
 ## Switching Between Nebula Instances
@@ -87,6 +149,10 @@ insert_cell(path="/local/notebook.ipynb", ...)
 - `connect_server` switches the current connection
 - All tools automatically use the current connection
 - Simple and predictable - no per-notebook URL tracking
+
+### Agent sessions and locking
+
+Write operations require an agent session. The MCP server automatically creates a session (using a stable MCP-scoped ID) the first time it performs a write on a notebook, so you don't have to call it manually. You can still call `start_agent_session`/`end_agent_session` explicitly if you want tighter control over lock lifetimes.
 
 ## Available MCP Tools
 

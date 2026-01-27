@@ -30,6 +30,40 @@ def _find_prompt_dir() -> Path:
     raise FileNotFoundError("No prompt directory found")
 
 
+def _find_codex_prompt_dir() -> Path | None:
+    env_dir = os.environ.get("CODEX_PROMPT_DIR", "").strip()
+    env_repo = os.environ.get("CODEX_REPO", "").strip() or os.environ.get("CODEX_HOME", "").strip()
+    candidates: list[Path] = []
+    if env_dir:
+        candidates.append(Path(env_dir).expanduser())
+    if env_repo:
+        repo_path = Path(env_repo).expanduser()
+        candidates.append(repo_path)
+        candidates.append(repo_path / "codex-rs")
+    candidates.extend(
+        [
+            Path("/Users/S190483/codex"),
+            Path("/Users/S190483/codex/codex-rs"),
+            Path.home() / "codex",
+            Path.home() / "codex" / "codex-rs",
+        ]
+    )
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if (resolved / "prompt.md").exists():
+            return resolved
+        if (resolved / "core" / "prompt.md").exists():
+            return resolved / "core"
+        if (resolved / "codex-rs" / "prompt.md").exists():
+            return resolved / "codex-rs"
+        if (resolved / "codex-rs" / "core" / "prompt.md").exists():
+            return resolved / "codex-rs" / "core"
+    return None
+
+
 def _normalize_markers(text: str) -> str:
     # Replace common non-ASCII dashes with ASCII hyphen for stable parsing.
     return text.replace("‑", "-").replace("–", "-").replace("—", "-")
@@ -435,9 +469,52 @@ def load_system_prompt_blocks(
     mcp_clients: list[dict] | None = None,
     mcp_instructions: str | None = None,
 ) -> list[str]:
+    specs = load_system_prompt_block_specs(
+        root_dir=root_dir,
+        tool_list=tool_list,
+        include_base=include_base,
+        mcp_clients=mcp_clients,
+        mcp_instructions=mcp_instructions,
+    )
+    return [spec["content"] for spec in specs]
+
+
+def _load_appended_block_labels(content: str) -> list[str]:
+    block = _extract_between_markers(
+        content,
+        "<!-- BEGIN_APPENDED_BLOCKS_LIST (meta marker; not part of prompt) -->",
+        "<!-- END_APPENDED_BLOCKS_LIST -->",
+    )
+    if not block:
+        block = _extract_between(
+            content,
+            "Additional system-prompt blocks appended (in order):",
+            "Code References block:",
+        )
+    labels: list[str] = []
+    for line in block.splitlines():
+        match = re.match(r"\s*\d+\)\s*(.+?)\s*$", line)
+        if match:
+            labels.append(match.group(1).strip())
+    return labels
+
+
+def load_system_prompt_block_specs(
+    root_dir: Path | None = None,
+    tool_list: str | None = None,
+    include_base: bool = True,
+    mcp_clients: list[dict] | None = None,
+    mcp_instructions: str | None = None,
+) -> list[dict[str, str]]:
     prompt_dir = _find_prompt_dir()
     path = prompt_dir / "system_prompt.md"
     content = _read_prompt_file(path)
+    appended_labels = _load_appended_block_labels(content)
+
+    def _label_for_append(index: int, fallback: str) -> str:
+        if 0 <= index < len(appended_labels):
+            return appended_labels[index]
+        return fallback
 
     # base prompts
     base_prompts = load_base_prompts()
@@ -458,13 +535,13 @@ def load_system_prompt_blocks(
             "Core system prompt template (Xy; conditional segments marked):",
             "Additional system-prompt blocks appended",
         )
+    todo_enabled = os.environ.get("CLAUDE_TODO_AVAILABLE", "1").strip() != "0"
+    ask_enabled = os.environ.get("CLAUDE_ASK_USER_AVAILABLE", "1").strip() != "0"
+    output_style_configured = os.environ.get("CLAUDE_OUTPUT_STYLE", "").strip().lower() not in {
+        "",
+        "default",
+    }
     if core:
-        todo_enabled = os.environ.get("CLAUDE_TODO_AVAILABLE", "1").strip() != "0"
-        ask_enabled = os.environ.get("CLAUDE_ASK_USER_AVAILABLE", "1").strip() != "0"
-        output_style_configured = os.environ.get("CLAUDE_OUTPUT_STYLE", "").strip().lower() not in {
-            "",
-            "default",
-        }
         core = _apply_core_conditionals(
             core,
             output_style_configured=output_style_configured,
@@ -520,12 +597,6 @@ def load_system_prompt_blocks(
         ["MCP CLI block"],
     )
 
-    mcp_cli_block = _extract_block(
-        content,
-        "MCP CLI block (zA0; appended at top-level system prompt if mcp-cli available):",
-        [],
-    )
-
     # Render env placeholders
     root = root_dir or Path.cwd()
     cwd = str(root)
@@ -569,23 +640,23 @@ def load_system_prompt_blocks(
             flags=re.MULTILINE,
         )
 
-    parts: list[str] = []
+    parts: list[tuple[str, str]] = []
     if include_base and base_prompt:
-        parts.append(base_prompt)
+        parts.append(("Base system prompt strings", base_prompt))
     if core:
-        parts.append(core)
+        parts.append(("Core system prompt template (Xy; conditional segments marked):", core))
     if security_block:
-        parts.append(security_block)
+        parts.append((_label_for_append(0, "Security policy block (FA0)"), security_block))
     if todo_reminder and todo_enabled:
-        parts.append(todo_reminder)
+        parts.append((_label_for_append(1, todo_reminder), todo_reminder))
     if code_refs:
-        parts.append(code_refs)
+        parts.append((_label_for_append(2, "Code References block"), code_refs))
     if env_block:
-        parts.append(env_block)
+        parts.append((_label_for_append(3, "Environment block (fA0) -- see below"), env_block))
 
     output_style = os.environ.get("CLAUDE_OUTPUT_STYLE", "").strip()
     if output_style and output_style.lower() != "default":
-        parts.append(output_style)
+        parts.append((_label_for_append(4, "Output Style block (if configured)"), output_style))
 
     resolved_instructions = mcp_instructions or _read_text_env("CLAUDE_MCP_INSTRUCTIONS")
     if not resolved_instructions:
@@ -596,11 +667,11 @@ def load_system_prompt_blocks(
             "## {server name}\n{server instructions}",
             resolved_instructions,
         )
-        parts.append(mcp_payload)
+        parts.append((_label_for_append(5, "MCP Server Instructions block (FK1) -- see below"), mcp_payload))
 
     scratchpad_path = os.environ.get("CLAUDE_SCRATCHPAD_PATH", "").strip()
     if scratchpad_path and scratchpad_block:
-        parts.append(scratchpad_block.replace("{scratchpad_path}", scratchpad_path))
+        parts.append((_label_for_append(6, "Scratchpad block (wK1) -- see below"), scratchpad_block.replace("{scratchpad_path}", scratchpad_path)))
 
     reasoning_effort = os.environ.get("CLAUDE_REASONING_EFFORT", "").strip().lower()
     if reasoning_effort and reasoning_block:
@@ -609,25 +680,24 @@ def load_system_prompt_blocks(
             "medium": "75",
             "high": "99",
         }.get(reasoning_effort, reasoning_effort)
-        parts.append(
-            reasoning_block.replace("{low|medium|high -> 45/75/99}", mapped)
-        )
+        parts.append((_label_for_append(7, "Reasoning effort block (NK1) -- see below"), reasoning_block.replace("{low|medium|high -> 45/75/99}", mapped)))
+
     if tool_list:
         parts = [
-            p.replace("{tool list}", tool_list) if p else p
-            for p in parts
+            (label, content.replace("{tool list}", tool_list) if content else content)
+            for label, content in parts
         ]
     else:
         parts = [
-            re.sub(r"^.*\{tool list\}.*\n?", "", p, flags=re.MULTILINE)
-            if p else p
-            for p in parts
+            (label, re.sub(r"^.*\{tool list\}.*\n?", "", content, flags=re.MULTILINE) if content else content)
+            for label, content in parts
         ]
-    cleaned: list[str] = []
-    for part in parts:
-        if not part or not part.strip():
+
+    cleaned: list[dict[str, str]] = []
+    for label, content in parts:
+        if not content or not content.strip():
             continue
-        cleaned.append(part.strip(" \t"))
+        cleaned.append({"label": label, "content": content.strip(" \t")})
     return cleaned
 
 
@@ -645,6 +715,32 @@ def load_notes_block() -> str:
     if not notes_block.startswith("Notes:"):
         notes_block = "Notes:\n" + notes_block
     return notes_block.strip()
+
+
+def load_codex_base_prompt(model_id: str | None = None) -> str:
+    prompt_dir = _find_codex_prompt_dir()
+    if not prompt_dir:
+        return ""
+
+    model = (model_id or "").lower()
+    filename = "prompt.md"
+    if "gpt-5.2-codex" in model or "bengalfox" in model:
+        filename = "gpt-5.2-codex_prompt.md"
+    elif "gpt-5.1-codex-max" in model:
+        filename = "gpt-5.1-codex-max_prompt.md"
+    elif "gpt-5.2" in model and "codex" not in model:
+        filename = "gpt_5_2_prompt.md"
+    elif "gpt-5.1" in model and "codex" not in model:
+        filename = "gpt_5_1_prompt.md"
+    elif "codex" in model:
+        filename = "gpt_5_codex_prompt.md"
+
+    path = prompt_dir / filename
+    if not path.exists():
+        path = prompt_dir / "prompt.md"
+        if not path.exists():
+            return ""
+    return _read_prompt_file(path).strip()
 
 
 def load_mcp_cli_block() -> str:

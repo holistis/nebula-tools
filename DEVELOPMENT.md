@@ -241,6 +241,10 @@ The MCP server logs to stderr:
 2. Add comprehensive test suite for new features
 3. Add integration tests for Claude SDK backend
 4. Consider adding usage examples to README
+5. Add Codex-MCP cancel/interrupt support when the protocol exposes a cancellation API (currently only local ignore + resume)
+6. Track Codex-MCP tool exposure changes (e.g., apply-patch support or additional tool schemas) and update agent-cli integrations accordingly
+
+Design note: The primary target is unattended agents. Interrupt handling is best-effort and intentionally minimal.
 
 ### Nebula Notebook
 1. Add health check endpoint to MCP server

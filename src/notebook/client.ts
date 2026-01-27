@@ -72,6 +72,14 @@ export interface NebulaClientConfig {
   timeout?: number;
   /** Number of retries for transient errors (default: 3) */
   retries?: number;
+  /** Optional agent session ID for lock enforcement */
+  agentId?: string;
+  /** Optional client name for lock metadata */
+  clientName?: string;
+  /** Optional client version for lock metadata */
+  clientVersion?: string;
+  /** Auto-start agent session for write operations (default: true if agentId provided) */
+  autoStartAgentSession?: boolean;
 }
 
 export interface KernelSession {
@@ -132,11 +140,34 @@ export class NebulaClient {
   private baseUrl: string;
   private timeout: number;
   private retries: number;
+  private agentId?: string;
+  private clientName?: string;
+  private clientVersion?: string;
+  private autoStartAgentSession: boolean;
+  private activeAgentSessions: Set<string> = new Set();
+  private agentSessionInFlight: Map<string, Promise<ToolResult<{ warning?: string }>>> = new Map();
+  private lastBackend?: 'ui' | 'headless';
 
   constructor(config: NebulaClientConfig = {}) {
     this.baseUrl = config.baseUrl || 'http://localhost:8000';
     this.timeout = config.timeout || 30000;
     this.retries = config.retries ?? 3;
+    this.agentId = config.agentId;
+    this.clientName = config.clientName;
+    this.clientVersion = config.clientVersion;
+    this.autoStartAgentSession = config.autoStartAgentSession ?? Boolean(config.agentId);
+  }
+
+  private recordBackend(backend?: 'ui' | 'headless'): void {
+    if (backend) {
+      this.lastBackend = backend;
+    }
+  }
+
+  consumeLastBackend(): 'ui' | 'headless' | undefined {
+    const backend = this.lastBackend;
+    this.lastBackend = undefined;
+    return backend;
   }
 
   /**
@@ -900,10 +931,57 @@ export class NebulaClient {
    * From the agent's perspective, both modes behave identically.
    */
   async applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>> {
-    return this.fetch<import('../types.js').OperationResult>('/api/notebook/operation', {
+    if (this.agentId) {
+      (operation as import('../types.js').NotebookOperation & import('../types.js').AgentContextFields).agentId = this.agentId;
+      if (this.clientName) {
+        (operation as import('../types.js').NotebookOperation & import('../types.js').AgentContextFields).clientName = this.clientName;
+      }
+      if (this.clientVersion) {
+        (operation as import('../types.js').NotebookOperation & import('../types.js').AgentContextFields).clientVersion = this.clientVersion;
+      }
+      if (this.autoStartAgentSession && this.isWriteOperation(operation.type)) {
+        const ensured = await this.ensureAgentSession(operation.notebookPath);
+        if (!ensured.success) {
+          return { success: false, error: ensured.error };
+        }
+      }
+    }
+
+    const result = await this.fetch<import('../types.js').OperationResult>('/api/notebook/operation', {
       method: 'POST',
       body: JSON.stringify({ operation }),
     });
+    if (result.success) {
+      this.recordBackend(result.data?.backend);
+    }
+    return result;
+  }
+
+  private isWriteOperation(opType: string): boolean {
+    const readOnlyOps = new Set(['readCell', 'readCellOutput', 'searchCells', 'readNotebook']);
+    const sessionOps = new Set(['startAgentSession', 'endAgentSession']);
+    return !readOnlyOps.has(opType) && !sessionOps.has(opType);
+  }
+
+  private async ensureAgentSession(path: string): Promise<ToolResult<{ warning?: string }>> {
+    if (!this.agentId) {
+      return { success: true, data: {} };
+    }
+    if (this.activeAgentSessions.has(path)) {
+      return { success: true, data: {} };
+    }
+    const inFlight = this.agentSessionInFlight.get(path);
+    if (inFlight) {
+      return inFlight;
+    }
+    const startPromise = this.startAgentSession(path, this.agentId);
+    this.agentSessionInFlight.set(path, startPromise);
+    try {
+      const result = await startPromise;
+      return result;
+    } finally {
+      this.agentSessionInFlight.delete(path);
+    }
   }
 
   /**
@@ -924,6 +1002,7 @@ export class NebulaClient {
   ): Promise<ToolResult<Notebook>> {
     interface RouterReadResult {
       success: boolean;
+      backend?: 'ui' | 'headless';
       data?: {
         path: string;
         cells: NotebookCell[];
@@ -958,6 +1037,7 @@ export class NebulaClient {
 
     // Router returns response with success/data/error structure
     const routerResult = result.data!;
+    this.recordBackend(routerResult.backend);
     if (!routerResult.success) {
       return { success: false, error: routerResult.error };
     }
@@ -968,6 +1048,7 @@ export class NebulaClient {
         path: routerResult.data!.path,
         cells: routerResult.data!.cells,
         metadata: routerResult.data!.metadata,
+        backend: routerResult.backend,
       },
     };
   }
@@ -1316,6 +1397,7 @@ export class NebulaClient {
       is_binary?: boolean;
     }>;
     executionCount?: number;
+    executionStatus?: 'idle' | 'busy' | 'error';
     cellId: string;
     cellIndex: number;
     temp_files?: string[];
@@ -1349,6 +1431,7 @@ export class NebulaClient {
       data: {
         outputs: opResult.outputs || [],
         executionCount: opResult.executionCount,
+        executionStatus: opResult.executionStatus,
         cellId: opResult.cellId!,
         cellIndex: opResult.cellIndex!,
         temp_files: opResult.temp_files,
@@ -1667,10 +1750,12 @@ export class NebulaClient {
     warning?: string;
     previousSessionDuration?: number;
   }>> {
-    const operation: import('../types.js').StartAgentSessionOp = {
+    const operation: import('../types.js').StartAgentSessionOp & import('../types.js').AgentContextFields = {
       type: 'startAgentSession',
       notebookPath: path,
-      agentId,
+      agentId: agentId || this.agentId,
+      clientName: this.clientName,
+      clientVersion: this.clientVersion,
     };
 
     const result = await this.applyOperation(operation);
@@ -1682,6 +1767,7 @@ export class NebulaClient {
     if (!opResult.success) {
       return { success: false, error: opResult.error };
     }
+    this.activeAgentSessions.add(path);
 
     return {
       success: true,
@@ -1713,6 +1799,7 @@ export class NebulaClient {
     if (!opResult.success) {
       return { success: false, error: opResult.error };
     }
+    this.activeAgentSessions.delete(path);
 
     return {
       success: true,

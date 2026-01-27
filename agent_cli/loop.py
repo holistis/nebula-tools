@@ -9,21 +9,24 @@ import subprocess
 import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable
 import re
 
 from agents import RunContextWrapper
 
 from .permissions import AppContext, SAFE_TOOLS
+from .mcp_manager import McpManager
 from .prompt_loader import (
     load_system_prompt,
     load_system_prompt_blocks,
+    load_system_prompt_block_specs,
     load_compaction_prompt,
     load_base_prompts,
     select_base_prompt,
     load_mcp_cli_block,
     load_plan_mode_prompt,
     load_attribution_header,
+    load_codex_base_prompt,
 )
 from .tool_specs import build_openai_tools, stringify_tool_result
 from .tools import RAW_TOOL_MAP
@@ -64,10 +67,15 @@ class LoopConfig:
     claude_sdk_hooks: bool = False
     claude_sdk_permission_callback: bool = False
     claude_sdk_auto_continue: bool = False
+    claude_sdk_max_thinking_tokens: Optional[int] = None
     strip_system_reminders_in_tool_results: bool = False
     attribution_header: Optional[str] = None
     mcp_clients: Optional[List[Dict[str, Any]]] = None
     mcp_instructions: Optional[str] = None
+    mcp_servers: Optional[Dict[str, Any]] = None
+    codex_cli_path: Optional[str] = None
+    codex_reasoning_effort: Optional[str] = None
+    codex_prompt_mode: Optional[str] = None
 
 
 @dataclass
@@ -189,6 +197,61 @@ def _build_git_status_block(root_dir: Path) -> Optional[str]:
     return block.strip()
 
 
+def _normalize_prompt_block_label(text: str) -> str:
+    line = ""
+    for raw in text.splitlines():
+        if raw.strip():
+            line = raw.strip()
+            break
+    if not line:
+        return "Prompt block"
+    lower = line.lower()
+    if lower.startswith("you are claude code, anthropic's official cli"):
+        return "Base prompt"
+    if lower.startswith("you are a claude agent, built on anthropic's claude agent sdk"):
+        return "Base prompt"
+    if "interactive cli tool" in lower:
+        return "Core prompt"
+    if lower.startswith("important: assist with authorized security testing"):
+        return "Security policy"
+    if "always use the todowrite tool" in lower:
+        return "TodoWrite reminder"
+    if lower.startswith("# code references"):
+        return "Code references"
+    if lower.startswith("here is useful information about the environment"):
+        return "Environment"
+    if lower.startswith("notes:"):
+        return "Notes"
+    if lower.startswith("# scratchpad directory"):
+        return "Scratchpad"
+    if lower.startswith("<reasoning_effort>") or "reasoning_effort" in lower:
+        return "Reasoning effort"
+    if lower.startswith("# mcp server instructions"):
+        return "MCP instructions"
+    if lower.startswith("# mcp cli command"):
+        return "MCP CLI"
+    if lower.startswith("gitstatus:"):
+        return "Git status"
+    if lower.startswith("#"):
+        stripped = line.lstrip("#").strip()
+        return stripped.split(":", 1)[0].strip() or "Prompt block"
+    return line[:80]
+
+
+def _label_system_blocks(blocks: Iterable[str]) -> List[str]:
+    labels: List[str] = []
+    seen: Dict[str, int] = {}
+    for block in blocks:
+        base = _normalize_prompt_block_label(block)
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        if count > 1:
+            labels.append(f"{base} #{count}")
+        else:
+            labels.append(base)
+    return labels
+
+
 def _map_permission_mode_to_claude(mode: str, auto_approve: bool) -> str:
     if mode == "allow":
         return "bypassPermissions"
@@ -199,6 +262,18 @@ def _map_permission_mode_to_claude(mode: str, auto_approve: bool) -> str:
     if auto_approve:
         return "acceptEdits"
     return "default"
+
+
+def _map_permission_mode_to_codex(mode: str, auto_approve: bool) -> str:
+    if mode == "allow":
+        return "never"
+    if mode == "deny":
+        return "untrusted"
+    if mode == "plan":
+        return "on-request"
+    if auto_approve:
+        return "never"
+    return "on-request"
 
 
 def _format_system_context_block(system_context: Dict[str, str]) -> str:
@@ -335,6 +410,17 @@ def _wrap_system_reminder(text: str) -> str:
     )
 
 
+def _build_resume_note(partial: str) -> str:
+    truncated = partial
+    if len(truncated) > 8000:
+        truncated = truncated[:8000].rstrip() + "\n...[truncated]"
+    return _wrap_system_reminder(
+        "Previous response was interrupted by the user. Continue from where it left off.\n"
+        "Do NOT repeat the partial response. Resume immediately after it.\n\n"
+        f"PARTIAL RESPONSE:\n{truncated}"
+    )
+
+
 def _build_claude_sdk_user_blocks(
     user_input: str,
     context: AppContext,
@@ -343,15 +429,7 @@ def _build_claude_sdk_user_blocks(
 ) -> Tuple[List[Dict[str, Any]], str]:
     parts = _build_user_prompt_parts(user_input, context, include_reminders)
     if pending_interruption:
-        truncated = pending_interruption
-        if len(truncated) > 8000:
-            truncated = truncated[:8000].rstrip() + "\n...[truncated]"
-        resume_note = _wrap_system_reminder(
-            "Previous response was interrupted by the user. Continue from where it left off.\n"
-            "Do NOT repeat the partial response. Resume immediately after it.\n\n"
-            f"PARTIAL RESPONSE:\n{truncated}"
-        )
-        parts = [resume_note] + parts
+        parts = [_build_resume_note(pending_interruption)] + parts
     prompt_text = "\n\n".join(parts)
     content_blocks = [{"type": "text", "text": part} for part in parts]
     return content_blocks, prompt_text
@@ -396,7 +474,12 @@ def _inject_plan_mode(messages: List[Dict[str, Any]], root_dir: Path, mode: str)
     return [{"role": "user", "content": reminder, "isMeta": True}] + messages
 
 
-def _build_system_prompt_blocks(context: AppContext, config: LoopConfig) -> List[str]:
+def _build_system_prompt_block_specs(
+    context: AppContext,
+    config: LoopConfig,
+    include_tool_list: bool = True,
+    include_system_context: bool = False,
+) -> List[Dict[str, str]]:
     _ensure_prompt_model_env(config.model)
     scratchpad_path = _ensure_scratchpad_path(context)
     if scratchpad_path:
@@ -408,35 +491,133 @@ def _build_system_prompt_blocks(context: AppContext, config: LoopConfig) -> List
         bool(config.append_system_prompt),
     )
     attribution = (config.attribution_header or "").strip() or load_attribution_header()
-    default_blocks = load_system_prompt_blocks(
+    tool_list = _auto_allow_list(context) if include_tool_list else None
+    default_specs = load_system_prompt_block_specs(
         context.root_dir,
-        _auto_allow_list(context),
+        tool_list,
         include_base=False,
         mcp_clients=config.mcp_clients,
         mcp_instructions=config.mcp_instructions,
     )
     git_status = _build_git_status_block(context.root_dir)
-    if git_status:
-        default_blocks.append(git_status)
     custom = config.custom_system_prompt.strip() if config.custom_system_prompt else ""
     append = config.append_system_prompt.strip() if config.append_system_prompt else ""
-    system_blocks = [custom] if custom else list(default_blocks)
+    if custom:
+        system_specs: List[Dict[str, str]] = [{"label": "Custom system prompt", "content": custom}]
+    else:
+        system_specs = list(default_specs)
+        if git_status:
+            system_specs.append({"label": "gitStatus", "content": git_status})
     if append:
-        system_blocks.append(append)
+        system_specs.append({"label": "Append system prompt", "content": append})
     mcp_cli = load_mcp_cli_block()
-    parts = [p for p in [attribution, base_prompt, *system_blocks, mcp_cli] if p]
-    normalized: List[str] = []
-    for i, part in enumerate(parts):
+    parts: List[Dict[str, str]] = []
+    if attribution:
+        parts.append({"label": "Attribution header", "content": attribution})
+    if base_prompt:
+        parts.append({"label": "Base system prompt strings", "content": base_prompt})
+    parts.extend(system_specs)
+    if mcp_cli:
+        parts.append({
+            "label": "MCP CLI block (zA0; appended at top-level system prompt if mcp-cli available):",
+            "content": mcp_cli,
+        })
+    if include_system_context:
+        context_block = _format_system_context_block(context.system_context)
+        if context_block:
+            parts.append({"label": "System context", "content": context_block})
+    normalized: List[Dict[str, str]] = []
+    for i, spec in enumerate(parts):
+        part = spec["content"]
         if i == 0 or part.startswith("gitStatus:") or part.startswith("\n"):
-            normalized.append(part)
+            normalized.append({"label": spec["label"], "content": part})
         else:
-            normalized.append("\n" + part)
+            normalized.append({"label": spec["label"], "content": "\n" + part})
     return normalized
+
+
+def _build_system_prompt_blocks(
+    context: AppContext,
+    config: LoopConfig,
+    include_tool_list: bool = True,
+) -> List[str]:
+    specs = _build_system_prompt_block_specs(
+        context,
+        config,
+        include_tool_list=include_tool_list,
+    )
+    return [spec["content"] for spec in specs]
 
 
 def _build_system_prompt(context: AppContext, config: LoopConfig) -> str:
     parts = _build_system_prompt_blocks(context, config)
     return "\n\n".join([p.strip() for p in parts if p and p.strip()]).strip()
+
+
+_CODEX_TOOL_KEYWORDS = [
+    "claude code",
+    "claude sdk",
+    "claude agent sdk",
+    "claude",
+    "anthropic",
+    "todowrite",
+    "askuserquestion",
+    "task tool",
+    "taskoutput",
+    "tool usage policy",
+    "mcp-cli",
+    "mcp server",
+    "skill tool",
+    "webfetch",
+    "websearch",
+    "grep tool",
+    "glob tool",
+    "read tool",
+    "write tool",
+    "edit tool",
+    "bash tool",
+    "notebook",
+    "tool calls",
+    "tools available",
+]
+
+
+def _strip_codex_tool_guidance(text: str) -> str:
+    if not text:
+        return ""
+    lines = text.splitlines()
+    cleaned: list[str] = []
+    skip_section = False
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("# task management"):
+            skip_section = True
+            continue
+        if lower.startswith("# asking questions as you work"):
+            skip_section = True
+            continue
+        if lower.startswith("# tool usage policy"):
+            skip_section = True
+            continue
+        if skip_section and lower.startswith("# "):
+            skip_section = False
+        if skip_section:
+            continue
+        if any(keyword in lower for keyword in _CODEX_TOOL_KEYWORDS):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
+def _build_codex_developer_instructions(context: AppContext, config: LoopConfig) -> str:
+    blocks = _build_system_prompt_blocks(context, config, include_tool_list=False)
+    filtered = []
+    for block in blocks:
+        cleaned = _strip_codex_tool_guidance(block)
+        if cleaned:
+            filtered.append(cleaned)
+    return "\n\n".join(filtered).strip()
 
 
 def _micro_compact(state: LoopState, config: LoopConfig) -> Optional[Dict[str, Any]]:
@@ -541,6 +722,33 @@ def _message_content(message: Any) -> str:
     return getattr(message, "content", "") or ""
 
 
+def _message_reasoning_summary(message: Any) -> str:
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        reasoning = message.get("reasoning")
+        if isinstance(reasoning, dict):
+            for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+                value = reasoning.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+        for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    reasoning = getattr(message, "reasoning", None)
+    if isinstance(reasoning, dict):
+        for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+            value = reasoning.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+        value = getattr(message, key, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def _assistant_blocks_text(blocks: Any) -> str:
     if not blocks:
         return ""
@@ -569,6 +777,66 @@ def _extract_stream_text(event: Any) -> str:
             return inner_delta["text"]
     if isinstance(event.get("text"), str):
         return event["text"]
+    return ""
+
+
+def _extract_reasoning_summary_delta(delta: Any) -> str:
+    if not delta:
+        return ""
+    if isinstance(delta, dict):
+        for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+            value = delta.get(key)
+            if isinstance(value, str) and value:
+                return value
+        reasoning = delta.get("reasoning")
+        if isinstance(reasoning, dict):
+            for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+                value = reasoning.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return ""
+    reasoning = getattr(delta, "reasoning", None)
+    if isinstance(reasoning, dict):
+        for key in ("summary", "summary_text", "summaryText", "reasoning_summary"):
+            value = reasoning.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("reasoning_summary", "summary", "summary_text", "summaryText"):
+        value = getattr(delta, key, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _extract_reasoning_delta(delta: Any) -> str:
+    if not delta:
+        return ""
+    if isinstance(delta, dict):
+        if isinstance(delta.get("reasoning"), str):
+            return delta["reasoning"]
+        if isinstance(delta.get("reasoning_content"), str):
+            return delta["reasoning_content"]
+        if isinstance(delta.get("reasoning_text"), str):
+            return delta["reasoning_text"]
+        reasoning = delta.get("reasoning")
+        if isinstance(reasoning, dict):
+            for key in ("text", "content", "reasoning"):
+                value = reasoning.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return ""
+    reasoning = getattr(delta, "reasoning", None)
+    if isinstance(reasoning, str):
+        return reasoning
+    if isinstance(reasoning, dict):
+        for key in ("text", "content", "reasoning"):
+            value = reasoning.get(key)
+            if isinstance(value, str) and value:
+                return value
+    for key in ("reasoning_content", "reasoning_text"):
+        value = getattr(delta, key, None)
+        if isinstance(value, str) and value:
+            return value
     return ""
 
 
@@ -656,7 +924,7 @@ def _load_subagent_meta_from_transcript(path_value: Any, max_chars: int) -> Dict
                             parts.append(part.get("text"))
                     prompt = "\n".join(p.strip() for p in parts if p.strip())
                 if prompt:
-                    meta["subagent_prompt"] = _truncate_log_value(prompt, max_chars)
+                    meta["subagent_prompt"] = prompt
                     label = _infer_subagent_label(prompt)
                     if label:
                         meta["subagent_type"] = label
@@ -964,12 +1232,35 @@ def _append_trace_log(config: LoopConfig, entry: Dict[str, Any]) -> None:
         return
 
 
+PROMPT_TRACE_TYPES = {
+    "system_prompt",
+    "system_prompt_fallback",
+    "developer_instructions",
+    "base_instructions",
+    "codex_developer_instructions",
+    "codex_base_instructions",
+    "tool_definitions",
+    "subagent_system_prompt",
+    "subagent_user_prompt",
+}
+
+
 async def _run_tool(
     ctx: AppContext,
     name: str,
     args: Dict[str, Any],
 ) -> Any:
     func = RAW_TOOL_MAP.get(name)
+    if func is None and name.startswith("mcp__"):
+        manager = getattr(ctx, "mcp_manager", None)
+        if not manager:
+            return {"error": f"MCP tool unavailable: {name}"}
+        if not ctx.permissions.check(name, name):
+            return {"error": f"Permission denied for {name}"}
+        try:
+            return await manager.call_tool(name, args)
+        except Exception as exc:
+            return {"error": f"{name} failed: {exc}"}
     if func is None:
         return {"error": f"Unknown tool: {name}"}
     wrapper = RunContextWrapper(ctx)
@@ -1005,88 +1296,10 @@ async def _execute_tools(
     calls: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
-    for group in _tool_groups(calls):
-        if len(group) == 1:
-            call = group[0]
-            _append_tool_log(
-                config,
-                {
-                    "type": "tool_call",
-                    "tool": call["name"],
-                    "tool_call_id": call["id"],
-                    "args": call.get("args", {}),
-                    "raw_arguments": call.get("raw_arguments"),
-                    "timestamp": time.time(),
-                },
-            )
-            _append_trace_log(
-                config,
-                {
-                    "type": "tool_call",
-                    "tool": call["name"],
-                    "tool_call_id": call["id"],
-                    "timestamp": time.time(),
-                    "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
-                },
-            )
-            start = time.time()
-            result = await _run_tool(ctx, call["name"], call["args"])
-            duration_ms = int((time.time() - start) * 1000)
-            result_text = stringify_tool_result(result)
-            reminder = _extract_system_reminder(result_text)
-            stripped_result = _strip_system_reminders(result_text)
-            if reminder:
-                _log_system_reminder(
-                    config,
-                    reminder,
-                    source="tool_result",
-                    tool_name=call["name"],
-                    tool_call_id=call["id"],
-                )
-            _append_tool_log(
-                config,
-                {
-                    "type": "tool_result",
-                    "tool": call["name"],
-                    "tool_call_id": call["id"],
-                    "args": call.get("args", {}),
-                    "raw_arguments": call.get("raw_arguments"),
-                    "duration_ms": duration_ms,
-                    "result": _truncate_log_value(result_text, config.tool_log_max_chars),
-                    "result_stripped": _truncate_log_value(stripped_result, config.tool_log_max_chars)
-                    if stripped_result != result_text
-                    else None,
-                    "timestamp": time.time(),
-                },
-            )
-            _append_trace_log(
-                config,
-                {
-                    "type": "tool_result",
-                    "tool": call["name"],
-                    "tool_call_id": call["id"],
-                    "timestamp": time.time(),
-                    "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
-                    "result": _truncate_log_value(result_text, config.trace_log_max_chars),
-                    "result_stripped": _truncate_log_value(stripped_result, config.trace_log_max_chars)
-                    if stripped_result != result_text
-                    else None,
-                },
-            )
-            content_for_model = (
-                stripped_result
-                if config.strip_system_reminders_in_tool_results and stripped_result != result_text
-                else result_text
-            )
-            results.append(
-                {
-                    "tool_call_id": call["id"],
-                    "content": content_for_model,
-                }
-            )
-        else:
-            starts = {call["id"]: time.time() for call in group}
-            for call in group:
+    try:
+        for group in _tool_groups(calls):
+            if len(group) == 1:
+                call = group[0]
                 _append_tool_log(
                     config,
                     {
@@ -1108,13 +1321,9 @@ async def _execute_tools(
                         "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
                     },
                 )
-            tasks = [
-                _run_tool(ctx, call["name"], call["args"])
-                for call in group
-            ]
-            group_results = await asyncio.gather(*tasks)
-            for call, result in zip(group, group_results):
-                duration_ms = int((time.time() - starts[call["id"]]) * 1000)
+                start = time.time()
+                result = await _run_tool(ctx, call["name"], call["args"])
+                duration_ms = int((time.time() - start) * 1000)
                 result_text = stringify_tool_result(result)
                 reminder = _extract_system_reminder(result_text)
                 stripped_result = _strip_system_reminders(result_text)
@@ -1167,6 +1376,99 @@ async def _execute_tools(
                         "content": content_for_model,
                     }
                 )
+            else:
+                starts = {call["id"]: time.time() for call in group}
+                for call in group:
+                    _append_tool_log(
+                        config,
+                        {
+                            "type": "tool_call",
+                            "tool": call["name"],
+                            "tool_call_id": call["id"],
+                            "args": call.get("args", {}),
+                            "raw_arguments": call.get("raw_arguments"),
+                            "timestamp": time.time(),
+                        },
+                    )
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "tool_call",
+                            "tool": call["name"],
+                            "tool_call_id": call["id"],
+                            "timestamp": time.time(),
+                            "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
+                        },
+                    )
+                tasks = [
+                    _run_tool(ctx, call["name"], call["args"])
+                    for call in group
+                ]
+                group_results = await asyncio.gather(*tasks)
+                for call, result in zip(group, group_results):
+                    duration_ms = int((time.time() - starts[call["id"]]) * 1000)
+                    result_text = stringify_tool_result(result)
+                    reminder = _extract_system_reminder(result_text)
+                    stripped_result = _strip_system_reminders(result_text)
+                    if reminder:
+                        _log_system_reminder(
+                            config,
+                            reminder,
+                            source="tool_result",
+                            tool_name=call["name"],
+                            tool_call_id=call["id"],
+                        )
+                    _append_tool_log(
+                        config,
+                        {
+                            "type": "tool_result",
+                            "tool": call["name"],
+                            "tool_call_id": call["id"],
+                            "args": call.get("args", {}),
+                            "raw_arguments": call.get("raw_arguments"),
+                            "duration_ms": duration_ms,
+                            "result": _truncate_log_value(result_text, config.tool_log_max_chars),
+                            "result_stripped": _truncate_log_value(stripped_result, config.tool_log_max_chars)
+                            if stripped_result != result_text
+                            else None,
+                            "timestamp": time.time(),
+                        },
+                    )
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "tool_result",
+                            "tool": call["name"],
+                            "tool_call_id": call["id"],
+                            "timestamp": time.time(),
+                            "args": _truncate_nested(call.get("args", {}), config.trace_log_max_chars),
+                            "result": _truncate_log_value(result_text, config.trace_log_max_chars),
+                            "result_stripped": _truncate_log_value(stripped_result, config.trace_log_max_chars)
+                            if stripped_result != result_text
+                            else None,
+                        },
+                    )
+                    content_for_model = (
+                        stripped_result
+                        if config.strip_system_reminders_in_tool_results and stripped_result != result_text
+                        else result_text
+                    )
+                    results.append(
+                        {
+                            "tool_call_id": call["id"],
+                            "content": content_for_model,
+                        }
+                    )
+    except KeyboardInterrupt:
+        _append_trace_log(
+            config,
+            {
+                "type": "interrupted",
+                "timestamp": time.time(),
+                "backend": config.backend or "openai-or-litellm",
+            },
+        )
+        return []
     return results
 
 
@@ -1193,7 +1495,10 @@ def _stream_openai_message(
     model: str,
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]],
-) -> Dict[str, Any]:
+    trace_log: Optional[Callable[[Dict[str, Any]], None]] = None,
+    trace_log_max_chars: int = 0,
+    trace_backend: str = "openai-or-litellm",
+) -> Tuple[Dict[str, Any], bool]:
     if client is None:
         raise RuntimeError("OpenAI client unavailable; set OPENAI_API_KEY or use litellm/ models.")
     payload: Dict[str, Any] = {
@@ -1206,50 +1511,79 @@ def _stream_openai_message(
         payload["tool_choice"] = "auto"
     stream = client.chat.completions.create(**payload)
     content_parts: List[str] = []
+    reasoning_summary_parts: List[str] = []
     tool_calls: Dict[int, Dict[str, Any]] = {}
-    for chunk in stream:
-        try:
-            choice = chunk.choices[0]
-        except Exception:
-            continue
-        delta = getattr(choice, "delta", None) or {}
-        text = getattr(delta, "content", None) if not isinstance(delta, dict) else delta.get("content")
-        if text:
-            content_parts.append(text)
-            print(text, end="", flush=True)
-        delta_tool_calls = getattr(delta, "tool_calls", None) if not isinstance(delta, dict) else delta.get("tool_calls")
-        if delta_tool_calls:
-            for call in delta_tool_calls:
-                if isinstance(call, dict):
-                    idx = call.get("index", 0)
-                    entry = tool_calls.setdefault(idx, {"id": "", "function": {"name": None, "arguments": ""}})
-                    if call.get("id"):
-                        entry["id"] = call["id"]
-                    func = call.get("function") or {}
-                    if func.get("name"):
-                        entry["function"]["name"] = func["name"]
-                    if func.get("arguments"):
-                        entry["function"]["arguments"] += func["arguments"]
-                else:
-                    idx = getattr(call, "index", 0)
-                    entry = tool_calls.setdefault(idx, {"id": "", "function": {"name": None, "arguments": ""}})
-                    call_id = getattr(call, "id", None)
-                    if call_id:
-                        entry["id"] = call_id
-                    func = getattr(call, "function", None)
-                    if func is not None:
-                        name = getattr(func, "name", None)
-                        if name:
-                            entry["function"]["name"] = name
-                        args = getattr(func, "arguments", None)
-                        if args:
-                            entry["function"]["arguments"] += args
+    interrupted = False
+    try:
+        for chunk in stream:
+            try:
+                choice = chunk.choices[0]
+            except Exception:
+                continue
+            delta = getattr(choice, "delta", None) or {}
+            reasoning_delta = _extract_reasoning_delta(delta)
+            if reasoning_delta and trace_log:
+                trace_log(
+                    {
+                        "type": "thinking_delta",
+                        "timestamp": time.time(),
+                        "backend": trace_backend,
+                        "content": _truncate_log_value(reasoning_delta, trace_log_max_chars),
+                    }
+                )
+            summary_delta = _extract_reasoning_summary_delta(delta)
+            if summary_delta:
+                reasoning_summary_parts.append(summary_delta)
+                if trace_log:
+                    trace_log(
+                        {
+                            "type": "reasoning_summary_delta",
+                            "timestamp": time.time(),
+                            "backend": trace_backend,
+                            "content": _truncate_log_value(summary_delta, trace_log_max_chars),
+                        }
+                    )
+            text = getattr(delta, "content", None) if not isinstance(delta, dict) else delta.get("content")
+            if text:
+                content_parts.append(text)
+                print(text, end="", flush=True)
+            delta_tool_calls = getattr(delta, "tool_calls", None) if not isinstance(delta, dict) else delta.get("tool_calls")
+            if delta_tool_calls:
+                for call in delta_tool_calls:
+                    if isinstance(call, dict):
+                        idx = call.get("index", 0)
+                        entry = tool_calls.setdefault(idx, {"id": "", "function": {"name": None, "arguments": ""}})
+                        if call.get("id"):
+                            entry["id"] = call["id"]
+                        func = call.get("function") or {}
+                        if func.get("name"):
+                            entry["function"]["name"] = func["name"]
+                        if func.get("arguments"):
+                            entry["function"]["arguments"] += func["arguments"]
+                    else:
+                        idx = getattr(call, "index", 0)
+                        entry = tool_calls.setdefault(idx, {"id": "", "function": {"name": None, "arguments": ""}})
+                        call_id = getattr(call, "id", None)
+                        if call_id:
+                            entry["id"] = call_id
+                        func = getattr(call, "function", None)
+                        if func is not None:
+                            name = getattr(func, "name", None)
+                            if name:
+                                entry["function"]["name"] = name
+                            args = getattr(func, "arguments", None)
+                            if args:
+                                entry["function"]["arguments"] += args
+    except KeyboardInterrupt:
+        interrupted = True
     ordered_calls = [tool_calls[idx] for idx in sorted(tool_calls.keys())]
+    reasoning_summary = "".join(reasoning_summary_parts).strip()
     return {
         "role": "assistant",
         "content": "".join(content_parts),
         "tool_calls": ordered_calls if ordered_calls else None,
-    }
+        "reasoning_summary": reasoning_summary or None,
+    }, interrupted
 
 
 def _call_litellm(
@@ -1303,9 +1637,49 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
         raise RuntimeError(f"openai package required: {exc}") from exc
 
     client = OpenAI() if _needs_openai_client(config) else None
-    tools = build_openai_tools()
-    system_blocks = _build_system_prompt_blocks(context, config)
-    system_blocks = _append_system_context_blocks(system_blocks, context.system_context)
+    mcp_manager: Optional[McpManager] = None
+    extra_tools: List[Dict[str, Any]] = []
+    if config.mcp_servers:
+        try:
+            def _mcp_log(entry: Dict[str, Any]) -> None:
+                if "backend" not in entry:
+                    entry["backend"] = "openai-or-litellm"
+                _append_trace_log(config, entry)
+
+            mcp_manager = McpManager(config.mcp_servers, _mcp_log)
+            errors = await mcp_manager.connect_all()
+            context.mcp_manager = mcp_manager
+            instructions = mcp_manager.build_instructions_block()
+            if instructions:
+                config.mcp_instructions = instructions
+            extra_tools = mcp_manager.openai_tools()
+            if errors:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "warning",
+                        "timestamp": time.time(),
+                        "backend": "openai-or-litellm",
+                        "message": "MCP connection errors: " + "; ".join(errors),
+                    },
+                )
+        except Exception as exc:
+            _append_trace_log(
+                config,
+                {
+                    "type": "warning",
+                    "timestamp": time.time(),
+                    "backend": "openai-or-litellm",
+                    "message": f"MCP setup failed: {exc}",
+                },
+            )
+    tools = build_openai_tools() + extra_tools
+    system_specs = _build_system_prompt_block_specs(
+        context,
+        config,
+        include_system_context=True,
+    )
+    system_blocks = [spec["content"] for spec in system_specs]
     system_prompt = "\n\n".join([p.strip() for p in system_blocks if p and p.strip()]).strip()
     structured_system = bool(system_blocks)
     system_message: Dict[str, Any]
@@ -1324,162 +1698,230 @@ async def _run_openai_loop(context: AppContext, config: LoopConfig) -> None:
             "backend": "openai-or-litellm",
             "model": config.model,
             "fallback_model": config.fallback_model,
-            "content": _truncate_log_value(system_prompt, config.trace_log_max_chars),
-            "blocks": _truncate_nested(system_blocks, config.trace_log_max_chars),
+            "content": system_prompt,
+            "blocks": system_blocks,
+            "block_labels": _label_system_blocks(system_blocks) if system_blocks else None,
             "structured": structured_system,
         },
     )
+    _append_trace_log(
+        config,
+        {
+            "type": "tool_definitions",
+            "timestamp": time.time(),
+            "backend": "openai-or-litellm",
+            "model": config.model,
+            "tools": tools,
+        },
+    )
     state = LoopState()
+    pending_interruption: Optional[str] = None
 
-    while True:
-        try:
-            user_input = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not user_input:
-            continue
-        if user_input in {"/quit", "/exit"}:
-            break
-
-        _append_trace_log(
-            config,
-            {
-                "type": "user_input",
-                "timestamp": time.time(),
-                "backend": "openai-or-litellm",
-                "content": _truncate_log_value(user_input, config.trace_log_max_chars),
-            },
-        )
-        state.messages.append({"role": "user", "content": user_input})
-
-        # Normalize + micro-compaction
-        compaction_info = _micro_compact(state, config)
-        if compaction_info and compaction_info.get("systemMessage"):
-            state.messages.append({"role": "system", "content": compaction_info["systemMessage"]})
-
-        # Auto-compaction
-        if _should_auto_compact(state, config):
-            await _compact(state, client, config)
-
-        # Loop until no tool calls
+    try:
         while True:
-            wrapped_messages = _inject_plan_mode(
-                list(state.messages),
-                context.root_dir,
-                context.permissions.mode,
-            )
-            wrapped_messages = _wrap_user_context(wrapped_messages, context.user_context)
-            call_messages = [system_message] + wrapped_messages
-            _append_trace_log(
-                config,
-                {
-                    "type": "model_request",
-                    "timestamp": time.time(),
-                    "model": config.model,
-                    "fallback_model": config.fallback_model,
-                    "messages": _truncate_nested(call_messages, config.trace_log_max_chars),
-                    "tools": _truncate_nested(tools, config.trace_log_max_chars),
-                },
-            )
-            streamed_openai = False
             try:
-                if _is_litellm_model(config.model):
-                    response = await _model_call(client, config, call_messages, tools)
-                    message = _get_message(response)
-                else:
-                    message = _stream_openai_message(client, config.model, call_messages, tools)
-                    streamed_openai = True
-            except Exception:
-                if structured_system:
-                    flat_messages = [{"role": "system", "content": system_prompt}] + wrapped_messages
-                    _append_trace_log(
-                        config,
-                        {
-                            "type": "system_prompt_fallback",
-                            "timestamp": time.time(),
-                            "backend": "openai-or-litellm",
-                            "reason": "structured_system_failed",
-                        },
-                    )
-                    try:
-                        if _is_litellm_model(config.model):
-                            response = await _model_call(client, config, flat_messages, tools)
-                            message = _get_message(response)
-                        else:
-                            message = _stream_openai_message(client, config.model, flat_messages, tools)
-                            streamed_openai = True
-                    except Exception:
-                        if config.fallback_model:
-                            response = await _model_call(client, config, flat_messages, tools)
-                            message = _get_message(response)
-                        else:
-                            raise
-                elif config.fallback_model:
-                    response = await _model_call(client, config, call_messages, tools)
-                    message = _get_message(response)
-                else:
-                    raise
-            tool_calls = _parse_tool_calls(message)
-            _append_trace_log(
-                config,
-                {
-                    "type": "model_response",
-                    "timestamp": time.time(),
-                    "model": config.model,
-                    "message": _truncate_nested(
-                        _serialize_message_for_log(message), config.trace_log_max_chars
-                    ),
-                    "tool_calls": _truncate_nested(tool_calls, config.trace_log_max_chars),
-                },
-            )
-            serialized_calls = None
-            if tool_calls:
-                serialized_calls = [
-                    {
-                        "id": call["id"],
-                        "type": "function",
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call.get("raw_arguments") or json.dumps(call["args"]),
-                        },
-                    }
-                    for call in tool_calls
-                ]
-            state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": _message_content(message),
-                    "tool_calls": serialized_calls,
-                }
-            )
-            if not tool_calls:
-                content = _message_content(message)
-                if content:
-                    _append_trace_log(
-                        config,
-                        {
-                            "type": "assistant_output",
-                            "timestamp": time.time(),
-                            "backend": "openai-or-litellm",
-                            "content": _truncate_log_value(content, config.trace_log_max_chars),
-                        },
-                    )
-                    if not streamed_openai:
-                        print(content)
-                    else:
-                        print()
+                user_input = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not user_input:
+                continue
+            if user_input in {"/quit", "/exit"}:
                 break
 
-            tool_results = await _execute_tools(context, config, tool_calls)
-            for result in tool_results:
+            _append_trace_log(
+                config,
+                {
+                    "type": "user_input",
+                    "timestamp": time.time(),
+                    "backend": "openai-or-litellm",
+                    "content": _truncate_log_value(user_input, config.trace_log_max_chars),
+                },
+            )
+            state.messages.append({"role": "user", "content": user_input})
+            resume_note = _build_resume_note(pending_interruption) if pending_interruption else None
+            pending_interruption = None
+            resume_injected = False
+
+            # Normalize + micro-compaction
+            compaction_info = _micro_compact(state, config)
+            if compaction_info and compaction_info.get("systemMessage"):
+                state.messages.append({"role": "system", "content": compaction_info["systemMessage"]})
+
+            # Auto-compaction
+            if _should_auto_compact(state, config):
+                await _compact(state, client, config)
+
+            # Loop until no tool calls
+            while True:
+                wrapped_messages = _inject_plan_mode(
+                    list(state.messages),
+                    context.root_dir,
+                    context.permissions.mode,
+                )
+                wrapped_messages = _wrap_user_context(wrapped_messages, context.user_context)
+                if resume_note and not resume_injected:
+                    wrapped_messages = [{"role": "user", "content": resume_note, "isMeta": True}] + wrapped_messages
+                    resume_injected = True
+                call_messages = [system_message] + wrapped_messages
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "model_request",
+                        "timestamp": time.time(),
+                        "model": config.model,
+                        "fallback_model": config.fallback_model,
+                        "messages": _truncate_nested(call_messages, config.trace_log_max_chars),
+                        "tools": _truncate_nested(tools, config.trace_log_max_chars),
+                    },
+                )
+                streamed_openai = False
+                interrupted = False
+                try:
+                    if _is_litellm_model(config.model):
+                        response = await _model_call(client, config, call_messages, tools)
+                        message = _get_message(response)
+                    else:
+                        message, interrupted = _stream_openai_message(
+                            client,
+                            config.model,
+                            call_messages,
+                            tools,
+                            trace_log=lambda entry: _append_trace_log(config, entry),
+                            trace_log_max_chars=config.trace_log_max_chars,
+                        )
+                        streamed_openai = True
+                except KeyboardInterrupt:
+                    interrupted = True
+                    message = {"role": "assistant", "content": "", "tool_calls": None}
+                except Exception:
+                    if structured_system:
+                        flat_messages = [{"role": "system", "content": system_prompt}] + wrapped_messages
+                        _append_trace_log(
+                            config,
+                            {
+                                "type": "system_prompt_fallback",
+                                "timestamp": time.time(),
+                                "backend": "openai-or-litellm",
+                                "reason": "structured_system_failed",
+                            },
+                        )
+                        try:
+                            if _is_litellm_model(config.model):
+                                response = await _model_call(client, config, flat_messages, tools)
+                                message = _get_message(response)
+                            else:
+                                message, interrupted = _stream_openai_message(
+                                    client,
+                                    config.model,
+                                    flat_messages,
+                                    tools,
+                                    trace_log=lambda entry: _append_trace_log(config, entry),
+                                    trace_log_max_chars=config.trace_log_max_chars,
+                                )
+                                streamed_openai = True
+                        except Exception:
+                            if config.fallback_model:
+                                response = await _model_call(client, config, flat_messages, tools)
+                                message = _get_message(response)
+                            else:
+                                raise
+                    elif config.fallback_model:
+                        response = await _model_call(client, config, call_messages, tools)
+                        message = _get_message(response)
+                    else:
+                        raise
+                if interrupted:
+                    content = _message_content(message)
+                    if content:
+                        pending_interruption = content
+                    if streamed_openai:
+                        print()
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "interrupted",
+                            "timestamp": time.time(),
+                            "backend": "openai-or-litellm",
+                        },
+                    )
+                    break
+                tool_calls = _parse_tool_calls(message)
+                reasoning_summary = _message_reasoning_summary(message)
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "model_response",
+                        "timestamp": time.time(),
+                        "model": config.model,
+                        "message": _truncate_nested(
+                            _serialize_message_for_log(message), config.trace_log_max_chars
+                        ),
+                        "tool_calls": _truncate_nested(tool_calls, config.trace_log_max_chars),
+                    },
+                )
+                if reasoning_summary:
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "reasoning_summary",
+                            "timestamp": time.time(),
+                            "backend": "openai-or-litellm",
+                            "content": _truncate_log_value(
+                                reasoning_summary, config.trace_log_max_chars
+                            ),
+                        },
+                    )
+                serialized_calls = None
+                if tool_calls:
+                    serialized_calls = [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call.get("raw_arguments") or json.dumps(call["args"]),
+                            },
+                        }
+                        for call in tool_calls
+                    ]
                 state.messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": result["tool_call_id"],
-                        "content": result["content"],
+                        "role": "assistant",
+                        "content": _message_content(message),
+                        "tool_calls": serialized_calls,
                     }
                 )
+                if not tool_calls:
+                    content = _message_content(message)
+                    if content:
+                        _append_trace_log(
+                            config,
+                            {
+                                "type": "assistant_output",
+                                "timestamp": time.time(),
+                                "backend": "openai-or-litellm",
+                                "content": _truncate_log_value(content, config.trace_log_max_chars),
+                            },
+                        )
+                        if not streamed_openai:
+                            print(content)
+                        else:
+                            print()
+                    break
+
+                tool_results = await _execute_tools(context, config, tool_calls)
+                for result in tool_results:
+                    state.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": result["tool_call_id"],
+                            "content": result["content"],
+                        }
+                    )
+    finally:
+        if mcp_manager:
+            await mcp_manager.close()
 
 
 def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
@@ -1504,6 +1946,10 @@ def _build_claude_sdk_options(context: AppContext, config: LoopConfig) -> Any:
         context.permissions.auto_approve,
     )
     options.include_partial_messages = bool(config.claude_sdk_stream)
+    if config.claude_sdk_max_thinking_tokens and config.claude_sdk_max_thinking_tokens > 0:
+        options.max_thinking_tokens = config.claude_sdk_max_thinking_tokens
+    if config.mcp_servers:
+        options.mcp_servers = config.mcp_servers
 
     tools_preset = config.claude_sdk_tools_preset
     if not tools_preset and config.claude_sdk_preset:
@@ -1546,6 +1992,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
         pass
 
     use_preset = bool(config.claude_sdk_preset)
+    tools_preset = config.claude_sdk_tools_preset or (config.claude_sdk_preset if config.claude_sdk_preset else None)
     options = _build_claude_sdk_options(context, config)
     compat = config.claude_sdk_compat
     hooks_enabled = config.claude_sdk_hooks or compat
@@ -1572,6 +2019,20 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             tool_input = _hook_value(hook_input, "tool_input")
             hook_meta = _extract_hook_meta(hook_input)
             hook_meta = _augment_hook_meta_from_transcript(hook_meta, config.trace_log_max_chars)
+            if tool_name == "Task" and isinstance(tool_input, dict):
+                subagent_prompt = tool_input.get("prompt")
+                if isinstance(subagent_prompt, str) and subagent_prompt:
+                    _append_trace_log(
+                        config,
+                        {
+                            "type": "subagent_user_prompt",
+                            "timestamp": time.time(),
+                            "backend": "claude-sdk",
+                            "subagent_type": tool_input.get("subagent_type"),
+                            "tool_call_id": hook_meta.get("tool_call_id") or hook_meta.get("tool_use_id"),
+                            "content": subagent_prompt,
+                        },
+                    )
             reminder = None
             if isinstance(tool_input, str):
                 reminder = _extract_system_reminder(tool_input)
@@ -1693,6 +2154,7 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
         )
 
     structured_blocks = None
+    block_labels = None
     if not use_preset:
         raw_extra = None
         if hasattr(options, "env") and isinstance(options.env, dict):
@@ -1715,6 +2177,22 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
                             structured_blocks = extracted
             except Exception:
                 structured_blocks = None
+        try:
+            if structured_blocks:
+                block_labels = _label_system_blocks(structured_blocks)
+        except Exception:
+            block_labels = None
+    tool_source: Dict[str, Any] = {}
+    if tools_preset:
+        tool_source = {
+            "source": f"preset:{tools_preset}",
+            "note": "Tool schemas are provided by the claude-sdk preset and are not exposed via the SDK.",
+        }
+    else:
+        tool_source = {
+            "source": "default",
+            "note": "Tool schemas are provided by claude-sdk defaults and are not exposed via the SDK.",
+        }
     system_prompt_label = (
         f"preset:{config.claude_sdk_preset}"
         if use_preset
@@ -1730,11 +2208,20 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             "backend": "claude-sdk",
             "model": config.model,
             "fallback_model": config.fallback_model,
-            "content": _truncate_log_value(system_prompt_label, config.trace_log_max_chars),
-            "blocks": _truncate_nested(structured_blocks, config.trace_log_max_chars)
-            if structured_blocks
-            else None,
+            "content": system_prompt_label,
+            "blocks": structured_blocks if structured_blocks else None,
+            "block_labels": block_labels if structured_blocks else None,
             "structured": bool(structured_blocks),
+        },
+    )
+    _append_trace_log(
+        config,
+        {
+            "type": "tool_definitions",
+            "timestamp": time.time(),
+            "backend": "claude-sdk",
+            "model": config.model,
+            "tools": tool_source,
         },
     )
 
@@ -1938,12 +2425,567 @@ async def _run_claude_sdk_loop(context: AppContext, config: LoopConfig) -> None:
             pass
 
 
+async def _run_codex_mcp_loop(context: AppContext, config: LoopConfig) -> None:
+    codex_cli = (
+        config.codex_cli_path
+        or os.environ.get("CODEX_CLI_PATH")
+        or os.environ.get("CODEX_PATH")
+        or "codex"
+    )
+    env = dict(os.environ)
+    proc = await asyncio.create_subprocess_exec(
+        codex_cli,
+        "mcp-server",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    if not proc.stdin or not proc.stdout:
+        raise RuntimeError("Failed to start codex mcp-server")
+
+    pending: Dict[str, asyncio.Future] = {}
+    stream_state: Dict[str, Dict[str, Any]] = {}
+    last_agent_message: Dict[str, str] = {}
+    latest_thread_id: Optional[str] = None
+    active_request_id: Optional[str] = None
+    request_alias: Dict[str, str] = {}
+    cancelled_requests: set[str] = set()
+    pending_interruption: Optional[str] = None
+
+    def _req_key(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
+    async def _send_json(message: Dict[str, Any]) -> None:
+        try:
+            proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+            await proc.stdin.drain()
+        except Exception:
+            return
+
+    async def _send_request(method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        request_id = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        pending[request_id] = future
+        payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        await _send_json(payload)
+        return await future
+
+    async def _send_response(request_id: Any, result: Dict[str, Any]) -> None:
+        response = {"jsonrpc": "2.0", "id": request_id, "result": result}
+        await _send_json(response)
+
+    def _should_auto_approve() -> bool:
+        if context.permissions.mode == "allow":
+            return True
+        if context.permissions.auto_approve:
+            return True
+        return False
+
+    async def _handle_elicitation(request_id: Any, params: Dict[str, Any]) -> None:
+        approval_kind = params.get("codex_elicitation") or params.get("codexElicitation")
+        decision = "approved" if _should_auto_approve() else "denied"
+        _append_trace_log(
+            config,
+            {
+                "type": "approval_request",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "approval_type": approval_kind,
+                "decision": decision,
+                "message": params.get("message"),
+            },
+        )
+        await _send_response(request_id, {"decision": decision})
+
+    def _log_tool_call(tool: str, args: Any, meta: Dict[str, Any]) -> None:
+        _append_tool_log(
+            config,
+            {
+                "type": "tool_call",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "tool": tool,
+                "args": _truncate_nested(args, config.tool_log_max_chars),
+                **meta,
+            },
+        )
+
+    def _log_tool_result(tool: str, args: Any, result: Any, meta: Dict[str, Any]) -> None:
+        _append_tool_log(
+            config,
+            {
+                "type": "tool_result",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "tool": tool,
+                "args": _truncate_nested(args, config.tool_log_max_chars),
+                "result": _truncate_nested(result, config.tool_log_max_chars),
+                **meta,
+            },
+        )
+
+    def _extract_mcp_result(result: Any) -> Tuple[Any, Optional[bool]]:
+        if isinstance(result, dict):
+            if "Ok" in result:
+                ok_result = result.get("Ok")
+                is_error = None
+                if isinstance(ok_result, dict):
+                    is_error = ok_result.get("is_error")
+                return ok_result, is_error
+            if "Err" in result:
+                return {"error": result.get("Err")}, True
+        return result, None
+
+    def _format_command(command: Any) -> str:
+        if isinstance(command, list):
+            return " ".join(str(part) for part in command if part is not None)
+        return str(command or "")
+
+    def _handle_event(params: Dict[str, Any]) -> None:
+        nonlocal latest_thread_id, active_request_id
+        meta = params.get("_meta") or {}
+        raw_req_id = _req_key(meta.get("requestId"))
+        req_id = raw_req_id
+        if active_request_id:
+            if not raw_req_id:
+                req_id = active_request_id
+            elif raw_req_id != active_request_id:
+                mapped = request_alias.get(raw_req_id)
+                if mapped:
+                    req_id = mapped
+                elif active_request_id in stream_state and raw_req_id not in stream_state:
+                    request_alias[raw_req_id] = active_request_id
+                    req_id = active_request_id
+        if req_id and req_id in cancelled_requests:
+            return
+        if not req_id and active_request_id and active_request_id in cancelled_requests:
+            return
+        msg = params.get("msg") or {}
+        event_type = msg.get("type")
+        if event_type == "session_configured":
+            thread_id = msg.get("session_id")
+            if thread_id and not latest_thread_id:
+                latest_thread_id = str(thread_id)
+            _append_trace_log(
+                config,
+                {
+                    "type": "session_configured",
+                    "timestamp": time.time(),
+                    "backend": "codex-mcp",
+                    "session_id": thread_id,
+                    "model": msg.get("model"),
+                    "provider": msg.get("model_provider_id"),
+                },
+            )
+            return
+        if event_type == "reasoning_content_delta":
+            delta = msg.get("delta")
+            if delta:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "thinking_delta",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "content": _truncate_log_value(str(delta), config.trace_log_max_chars),
+                    },
+                )
+            return
+        if event_type and "reasoning_summary" in str(event_type):
+            summary = msg.get("delta") or msg.get("summary") or msg.get("text")
+            if not summary:
+                reasoning = msg.get("reasoning")
+                if isinstance(reasoning, dict):
+                    summary = reasoning.get("summary") or reasoning.get("summary_text") or reasoning.get("summaryText")
+            if summary:
+                summary_type = "reasoning_summary_delta" if "delta" in str(event_type) else "reasoning_summary"
+                _append_trace_log(
+                    config,
+                    {
+                        "type": summary_type,
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "content": _truncate_log_value(str(summary), config.trace_log_max_chars),
+                    },
+                )
+            return
+        if event_type == "agent_message_content_delta":
+            delta = msg.get("delta")
+            if delta:
+                if not req_id:
+                    return
+                state = stream_state.setdefault(req_id, {"streamed_any": False, "buffer": ""})
+                state["streamed_any"] = True
+                state["buffer"] += str(delta)
+                print(str(delta), end="", flush=True)
+            return
+        if event_type == "agent_message":
+            message = msg.get("message")
+            if isinstance(message, str) and message:
+                if not req_id:
+                    return
+                last_agent_message[req_id] = message
+            return
+        if event_type == "mcp_tool_call_begin":
+            invocation = msg.get("invocation") or {}
+            tool = invocation.get("tool") or "Tool"
+            args = invocation.get("arguments") or {}
+            _log_tool_call(
+                str(tool),
+                args,
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "mcp_server": invocation.get("server"),
+                    "mcp_tool": invocation.get("tool"),
+                },
+            )
+            return
+        if event_type == "mcp_tool_call_end":
+            invocation = msg.get("invocation") or {}
+            tool = invocation.get("tool") or "Tool"
+            args = invocation.get("arguments") or {}
+            result, is_error = _extract_mcp_result(msg.get("result"))
+            _log_tool_result(
+                str(tool),
+                args,
+                result,
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "mcp_server": invocation.get("server"),
+                    "mcp_tool": invocation.get("tool"),
+                    "is_error": is_error,
+                },
+            )
+            return
+        if event_type == "exec_command_begin":
+            command = _format_command(msg.get("command"))
+            _log_tool_call(
+                "Bash",
+                {"command": command, "cwd": str(msg.get("cwd") or "")},
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "tool_cwd": str(msg.get("cwd") or ""),
+                    "exec_source": msg.get("source"),
+                },
+            )
+            return
+        if event_type == "exec_command_end":
+            command = _format_command(msg.get("command"))
+            result_payload = {
+                "stdout": msg.get("stdout"),
+                "stderr": msg.get("stderr"),
+                "exit_code": msg.get("exit_code"),
+                "aggregated_output": msg.get("aggregated_output"),
+            }
+            _log_tool_result(
+                "Bash",
+                {"command": command, "cwd": str(msg.get("cwd") or "")},
+                result_payload,
+                {
+                    "tool_call_id": msg.get("call_id"),
+                    "tool_cwd": str(msg.get("cwd") or ""),
+                    "exec_source": msg.get("source"),
+                },
+            )
+            return
+        if event_type in {"warning", "error"}:
+            message = msg.get("message") or msg.get("error") or msg.get("text")
+            if message:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "warning",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "message": _truncate_log_value(str(message), config.trace_log_max_chars),
+                    },
+                )
+
+    async def _stdout_reader() -> None:
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                break
+            raw = line.decode("utf-8", errors="replace").strip()
+            if not raw:
+                continue
+            try:
+                message = json.loads(raw)
+            except Exception:
+                continue
+            if "method" in message:
+                method = message.get("method")
+                params = message.get("params") or {}
+                if method == "codex/event":
+                    _handle_event(params)
+                elif method == "elicitation/request":
+                    await _handle_elicitation(message.get("id"), params)
+                continue
+            if "id" in message:
+                key = _req_key(message.get("id"))
+                future = pending.pop(key, None)
+                if future and not future.done():
+                    if "error" in message:
+                        future.set_exception(RuntimeError(message.get("error")))
+                    else:
+                        future.set_result(message)
+
+    async def _stderr_reader() -> None:
+        if not proc.stderr:
+            return
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").strip()
+            if text:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "warning",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "message": _truncate_log_value(text, config.trace_log_max_chars),
+                    },
+                )
+
+    stdout_task = asyncio.create_task(_stdout_reader())
+    stderr_task = asyncio.create_task(_stderr_reader())
+
+    init_payload = {
+        "protocolVersion": "2025-06-18",
+        "clientInfo": {"name": "nexus-agent-cli", "version": "0.1"},
+        "capabilities": {},
+    }
+    try:
+        await _send_request("initialize", init_payload)
+    except Exception:
+        pass
+
+    codex_prompt_mode = (config.codex_prompt_mode or "developer").strip().lower()
+    codex_base_instructions = ""
+    codex_developer_instructions = ""
+    local_prompt = _build_codex_developer_instructions(context, config)
+
+    if codex_prompt_mode == "override":
+        codex_prompt = load_codex_base_prompt(config.model)
+        if codex_prompt:
+            codex_base_instructions = (
+                "\n\n".join([local_prompt, codex_prompt]).strip()
+                if local_prompt
+                else codex_prompt
+            )
+        else:
+            codex_developer_instructions = local_prompt
+            _append_trace_log(
+                config,
+                {
+                    "type": "warning",
+                    "timestamp": time.time(),
+                    "backend": "codex-mcp",
+                    "message": "Codex base prompt not found; falling back to developer instructions only.",
+                },
+            )
+    else:
+        codex_developer_instructions = local_prompt
+
+    if codex_base_instructions:
+        _append_trace_log(
+            config,
+            {
+                "type": "codex_base_instructions",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "content": codex_base_instructions,
+            },
+        )
+    if codex_developer_instructions:
+        _append_trace_log(
+            config,
+            {
+                "type": "codex_developer_instructions",
+                "timestamp": time.time(),
+                "backend": "codex-mcp",
+                "content": codex_developer_instructions,
+            },
+        )
+    _append_trace_log(
+        config,
+        {
+            "type": "tool_definitions",
+            "timestamp": time.time(),
+            "backend": "codex-mcp",
+            "model": config.model,
+            "tools": {
+                "source": "codex-mcp",
+                "note": "Tool schemas are managed internally by the Codex CLI and are not exposed via MCP.",
+            },
+        },
+    )
+
+    approval_policy = _map_permission_mode_to_codex(
+        context.permissions.mode, context.permissions.auto_approve
+    )
+
+    try:
+        while True:
+            try:
+                user_input = await asyncio.to_thread(input, "> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            user_input = user_input.strip()
+            if not user_input:
+                continue
+            if user_input in {"/quit", "/exit"}:
+                break
+
+            prompt_text = user_input
+            if pending_interruption:
+                prompt_text = f"{_build_resume_note(pending_interruption)}\n\n{user_input}"
+                pending_interruption = None
+
+            _append_trace_log(
+                config,
+                {
+                    "type": "user_input",
+                    "timestamp": time.time(),
+                    "backend": "codex-mcp",
+                    "content": _truncate_log_value(user_input, config.trace_log_max_chars),
+                    "expanded_prompt": _truncate_log_value(prompt_text, config.trace_log_max_chars)
+                    if prompt_text != user_input
+                    else None,
+                },
+            )
+
+            request_args: Dict[str, Any]
+            if latest_thread_id:
+                request_args = {"threadId": latest_thread_id, "prompt": prompt_text}
+                tool_name = "codex-reply"
+            else:
+                request_args = {
+                    "prompt": prompt_text,
+                    "model": config.model,
+                    "cwd": str(context.root_dir),
+                    "sandbox": "workspace-write",
+                    "approval-policy": approval_policy,
+                }
+                config_overrides: Dict[str, Any] = {}
+                if config.codex_reasoning_effort:
+                    config_overrides["model_reasoning_effort"] = (
+                        str(config.codex_reasoning_effort).strip().lower()
+                    )
+                if config_overrides:
+                    request_args["config"] = config_overrides
+                if codex_base_instructions:
+                    request_args["base-instructions"] = codex_base_instructions
+                if codex_developer_instructions:
+                    request_args["developer-instructions"] = codex_developer_instructions
+                tool_name = "codex"
+            request_id = str(uuid.uuid4())
+            active_request_id = request_id
+            stream_state[_req_key(request_id)] = {"streamed_any": False, "buffer": ""}
+            future = asyncio.get_event_loop().create_future()
+            pending[request_id] = future
+            await _send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": request_args},
+                }
+            )
+            interrupted = False
+            try:
+                response = await future
+            except KeyboardInterrupt:
+                interrupted = True
+                pending.pop(request_id, None)
+            if interrupted:
+                cancelled_requests.add(request_id)
+                state = stream_state.get(_req_key(request_id), {})
+                partial = state.get("buffer", "")
+                if partial:
+                    pending_interruption = partial
+                if state.get("streamed_any"):
+                    print()
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "interrupted",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "session_id": latest_thread_id,
+                    },
+                )
+                continue
+            result = response.get("result") or {}
+            if isinstance(result, dict):
+                structured = result.get("structuredContent") or result.get("structured_content") or {}
+                thread_id = structured.get("threadId") or structured.get("thread_id")
+                if thread_id:
+                    latest_thread_id = str(thread_id)
+                content = structured.get("content")
+                if not content:
+                    blocks = result.get("content") or []
+                    if isinstance(blocks, list):
+                        content = "\n".join(
+                            [
+                                str(block.get("text"))
+                                for block in blocks
+                                if isinstance(block, dict) and block.get("type") == "text"
+                            ]
+                        ).strip()
+                if not content:
+                    content = last_agent_message.get(_req_key(request_id), "")
+            else:
+                content = last_agent_message.get(_req_key(request_id), "")
+
+            state = stream_state.get(_req_key(request_id), {})
+            streamed_any = bool(state.get("streamed_any"))
+            if not content:
+                content = state.get("buffer", "")
+            if streamed_any:
+                print()
+            elif content:
+                print(content)
+
+            if content:
+                _append_trace_log(
+                    config,
+                    {
+                        "type": "assistant_output",
+                        "timestamp": time.time(),
+                        "backend": "codex-mcp",
+                        "content": _truncate_log_value(content, config.trace_log_max_chars),
+                        "session_id": latest_thread_id,
+                    },
+                )
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+
 async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
     def _attach_loggers(ctx: AppContext) -> None:
         ctx.trace_log_max_chars = config.trace_log_max_chars
         ctx.tool_log_max_chars = config.tool_log_max_chars
 
         def _trace_logger(entry: Dict[str, Any]) -> None:
+            entry_type = entry.get("type") if isinstance(entry, dict) else None
+            if entry_type in PROMPT_TRACE_TYPES:
+                _append_trace_log(config, entry)
+                return
             _append_trace_log(config, _truncate_nested(entry, config.trace_log_max_chars))
 
         def _tool_logger(entry: Dict[str, Any]) -> None:
@@ -1955,5 +2997,8 @@ async def run_cli_loop(context: AppContext, config: LoopConfig) -> None:
     _attach_loggers(context)
     if config.backend == "claude-sdk":
         await _run_claude_sdk_loop(context, config)
+        return
+    if config.backend == "codex-mcp":
+        await _run_codex_mcp_loop(context, config)
         return
     await _run_openai_loop(context, config)

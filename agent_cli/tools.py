@@ -578,6 +578,13 @@ def _append_notes(prompt: str) -> str:
     return f"{prompt.rstrip()}\n\n{NOTES_BLOCK}"
 
 
+def _subagent_instructions(agent_type: str) -> str:
+    instructions = _subagent_prompt(agent_type)
+    if not instructions:
+        instructions = f"You are a Claude Code subagent of type {agent_type}."
+    return _append_notes(instructions)
+
+
 def _subagent_default_model_label(agent_type: str) -> str:
     meta = SUBAGENT_METADATA.get(agent_type) or {}
     label = meta.get("model")
@@ -782,10 +789,7 @@ class _SubagentHooks(RunHooks[AppContext]):
 
 
 def _build_subagent(agent_type: str, model: Optional[str]) -> Agent[AppContext]:
-    instructions = _subagent_prompt(agent_type)
-    if not instructions:
-        instructions = f"You are a Claude Code subagent of type {agent_type}."
-    instructions = _append_notes(instructions)
+    instructions = _subagent_instructions(agent_type)
     return Agent(
         name=f"Subagent-{agent_type}",
         instructions=instructions,
@@ -902,6 +906,30 @@ async def _task_tool(
     )
 
     agent_id = resume or str(uuid.uuid4())
+    instructions = _subagent_instructions(subagent_type)
+    if ctx.context.trace_logger:
+        ctx.context.trace_logger(
+            {
+                "type": "subagent_system_prompt",
+                "timestamp": time.time(),
+                "backend": "openai-subagent",
+                "subagent_type": subagent_type,
+                "agent_id": agent_id,
+                "model": _subagent_model(subagent_type, model),
+                "content": instructions,
+            }
+        )
+        ctx.context.trace_logger(
+            {
+                "type": "subagent_user_prompt",
+                "timestamp": time.time(),
+                "backend": "openai-subagent",
+                "subagent_type": subagent_type,
+                "agent_id": agent_id,
+                "model": _subagent_model(subagent_type, model),
+                "content": prompt,
+            }
+        )
 
     async def _run() -> Dict[str, Any]:
         start = time.time()

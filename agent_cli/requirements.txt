@@ -3,3 +3,4 @@ openai
 litellm
 claude-agent-sdk
 anyio>=4.0.0
+mcp
