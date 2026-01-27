@@ -8,14 +8,17 @@
 import { notebookTools } from './notebook.js';
 import { kernelTools } from './kernel.js';
 import { executionTools } from './execution.js';
+import { fileTools } from './files.js';
 // Re-export tool categories for direct access
 export { notebookTools } from './notebook.js';
 export { kernelTools } from './kernel.js';
 export { executionTools } from './execution.js';
+export { fileTools } from './files.js';
 // Re-export individual tools for TypeScript consumers who need type safety
 export * from './notebook.js';
 export * from './kernel.js';
 export * from './execution.js';
+export * from './files.js';
 /**
  * All tools combined in a single array
  */
@@ -23,6 +26,7 @@ export const allTools = [
     ...notebookTools,
     ...kernelTools,
     ...executionTools,
+    ...fileTools,
 ];
 /**
  * Map of tool name to tool object for quick lookup
@@ -72,26 +76,37 @@ export async function executeToolForMCP(name, params, client) {
         };
     }
     try {
+        // Clear any stale backend info before executing the tool
+        client.consumeLastBackend();
         const result = await tool.execute(params, client);
+        const backend = client.consumeLastBackend();
         // Use custom formatter if available, otherwise default JSON
         if (tool.formatForMCP) {
+            const content = await tool.formatForMCP(result);
+            if (backend) {
+                content.push({ type: 'text', text: `Backend: ${backend}` });
+            }
             return {
-                content: tool.formatForMCP(result),
+                content,
                 isError: !result.success,
             };
         }
         // Default formatting
         if (!result.success) {
-            return {
-                content: [{ type: 'text', text: `Error: ${result.error}` }],
-                isError: true,
-            };
+            const content = [{ type: 'text', text: `Error: ${result.error}` }];
+            if (backend) {
+                content.push({ type: 'text', text: `Backend: ${backend}` });
+            }
+            return { content, isError: true };
         }
-        return {
-            content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }],
-        };
+        const content = [{ type: 'text', text: JSON.stringify(result.data, null, 2) }];
+        if (backend) {
+            content.push({ type: 'text', text: `Backend: ${backend}` });
+        }
+        return { content };
     }
     catch (error) {
+        client.consumeLastBackend();
         const message = error instanceof Error ? error.message : String(error);
         return {
             content: [{ type: 'text', text: `Tool execution failed: ${message}` }],
@@ -118,6 +133,7 @@ export const toolCategories = {
     notebook: notebookTools,
     kernel: kernelTools,
     execution: executionTools,
+    files: fileTools,
 };
 /**
  * Get tool names by category
@@ -127,6 +143,7 @@ export function getToolNamesByCategory() {
         notebook: notebookTools.map(t => t.definition.name),
         kernel: kernelTools.map(t => t.definition.name),
         execution: executionTools.map(t => t.definition.name),
+        files: fileTools.map(t => t.definition.name),
     };
 }
 //# sourceMappingURL=index.js.map

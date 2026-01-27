@@ -8,6 +8,7 @@ import type { Tool, ToolResult, MCPContent } from './types.js';
 import type { NebulaClient } from '../notebook/client.js';
 import type { NotebookCell, CellOutput } from '../types.js';
 import { createAdaptivePoller } from '../utils/polling.js';
+import { resizeImageIfNeeded } from '../utils/imageResize.js';
 
 // =============================================================================
 // Shared Utilities
@@ -21,14 +22,19 @@ function formatCellPreview(cell: NotebookCell, index: number): string {
   return `${index}: ${typeTag} id="${cell.id}"${execCount} ${firstLine}${moreLines}`;
 }
 
-function formatOutputs(outputs: CellOutput[]): MCPContent {
-  return outputs.map(o => {
+async function formatOutputs(outputs: CellOutput[]): Promise<MCPContent> {
+  const results: MCPContent = [];
+  for (const o of outputs) {
     if (o.type === 'image') {
-      return { type: 'image' as const, data: o.content, mimeType: 'image/png' };
+      // Resize images to fit Claude API limits (2000px max dimension)
+      const resizedData = await resizeImageIfNeeded(o.content);
+      results.push({ type: 'image' as const, data: resizedData, mimeType: 'image/png' });
+    } else {
+      const prefix = o.type === 'error' ? '[ERROR] ' : '';
+      results.push({ type: 'text' as const, text: prefix + o.content });
     }
-    const prefix = o.type === 'error' ? '[ERROR] ' : '';
-    return { type: 'text' as const, text: prefix + o.content };
-  });
+  }
+  return results;
 }
 
 // =============================================================================
@@ -360,7 +366,7 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
     };
   },
 
-  formatForMCP(result) {
+  async formatForMCP(result) {
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
@@ -381,9 +387,10 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
 
     // Format each output with truncation metadata
     for (const output of outputs) {
-      // Images are returned as-is (not affected by truncation limits)
+      // Images are resized to fit Claude API limits (2000px max dimension)
       if (output.type === 'image') {
-        mcpOutputs.push({ type: 'image' as const, data: output.content, mimeType: 'image/png' });
+        const resizedData = await resizeImageIfNeeded(output.content);
+        mcpOutputs.push({ type: 'image' as const, data: resizedData, mimeType: 'image/png' });
         continue;
       }
 

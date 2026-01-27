@@ -96,6 +96,8 @@ export interface Notebook {
     path: string;
     cells: NotebookCell[];
     metadata?: Record<string, unknown>;
+    /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
+    backend?: 'ui' | 'headless';
 }
 /**
  * Insert a new cell at a specific position
@@ -227,6 +229,14 @@ export interface EndAgentSessionOp {
     notebookPath: string;
 }
 /**
+ * Optional agent context attached to operations (used for lock enforcement)
+ */
+export interface AgentContextFields {
+    agentId?: string;
+    clientName?: string;
+    clientVersion?: string;
+}
+/**
  * Delete multiple cells by ID
  */
 export interface DeleteCellsOp {
@@ -287,12 +297,14 @@ export interface ExecuteCellOp {
 /**
  * Union of all notebook operations
  */
-export type NotebookOperation = InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp | StartAgentSessionOp | EndAgentSessionOp | DeleteCellsOp | InsertCellsOp | SearchCellsOp | ClearOutputsOp | ExecuteCellOp;
+export type NotebookOperation = (InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp | StartAgentSessionOp | EndAgentSessionOp | DeleteCellsOp | InsertCellsOp | SearchCellsOp | ClearOutputsOp | ExecuteCellOp) & AgentContextFields;
 /**
  * Result of applying an operation
  */
 export interface OperationResult {
     success: boolean;
+    /** Backend that served the operation */
+    backend?: 'ui' | 'headless';
     /** Actual cell ID (may differ from requested if auto-fixed) */
     cellId?: string;
     /** Cell index after operation */

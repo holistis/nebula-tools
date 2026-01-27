@@ -1,80 +1,17 @@
 /**
  * File Tools
  *
- * Tools for file system operations.
+ * Tools for file system operations on the Nebula server.
+ * These operate on the server's filesystem, not the local MCP client filesystem.
  */
-// =============================================================================
-// Shared Utilities
-// =============================================================================
-function truncateWithHeadTail(text, maxLines = 100) {
-    const lines = text.split('\n');
-    if (lines.length <= maxLines)
-        return text;
-    const headLines = Math.floor(maxLines / 2);
-    const tailLines = maxLines - headLines;
-    const omitted = lines.length - maxLines;
-    return [
-        ...lines.slice(0, headLines),
-        `\n... [${omitted} lines omitted] ...\n`,
-        ...lines.slice(-tailLines),
-    ].join('\n');
-}
-export const listFilesTool = {
-    definition: {
-        name: 'list_files',
-        description: 'List files and directories in a path',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'Directory path to list (default: current directory)' },
-                pattern: { type: 'string', description: 'Optional glob pattern to filter files (e.g., "*.ipynb")' },
-            },
-            required: [],
-        },
-        annotations: { readOnlyHint: true },
-    },
-    async execute(params, client) {
-        const path = params.path ?? '.';
-        const result = await client.listFiles(path);
-        if (!result.success) {
-            return { success: false, error: result.error };
-        }
-        let files = result.data ?? [];
-        // Apply pattern filter if provided
-        if (params.pattern) {
-            const regex = new RegExp(params.pattern
-                .replace(/\./g, '\\.')
-                .replace(/\*/g, '.*')
-                .replace(/\?/g, '.'));
-            files = files.filter((f) => regex.test(f.name));
-        }
-        return { success: true, data: { path, files } };
-    },
-    formatForMCP(result) {
-        if (!result.success) {
-            return [{ type: 'text', text: `Error: ${result.error}` }];
-        }
-        const { path, files } = result.data;
-        if (files.length === 0) {
-            return [{ type: 'text', text: `No files found in ${path}` }];
-        }
-        const lines = [`Contents of ${path}:\n`];
-        files.forEach(f => {
-            const icon = f.type === 'directory' ? '📁' : '📄';
-            lines.push(`  ${icon} ${f.name}`);
-        });
-        return [{ type: 'text', text: lines.join('\n') }];
-    },
-};
 export const readFileTool = {
     definition: {
         name: 'read_file',
-        description: 'Read the contents of a file',
+        description: 'Read the contents of a text file from the server. Returns file content as string. For notebooks (.ipynb), returns JSON string.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Path to the file to read' },
-                max_lines: { type: 'number', description: 'Maximum lines to return (default: 200)' },
+                path: { type: 'string', description: 'Path to the file on the server' },
             },
             required: ['path'],
         },
@@ -85,17 +22,12 @@ export const readFileTool = {
         if (!result.success) {
             return { success: false, error: result.error };
         }
-        const content = result.data?.content ?? '';
-        const maxLines = params.max_lines ?? 200;
-        const lines = content.split('\n');
-        const truncated = lines.length > maxLines;
-        const truncatedContent = truncated ? truncateWithHeadTail(content, maxLines) : content;
         return {
             success: true,
             data: {
                 path: params.path,
-                content: truncatedContent,
-                truncated,
+                content: result.data.content,
+                type: 'text',
             },
         };
     },
@@ -104,17 +36,19 @@ export const readFileTool = {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
         const { path, content } = result.data;
-        return [{ type: 'text', text: `File: ${path}\n---\n${content}` }];
+        const lines = content.split('\n').length;
+        const chars = content.length;
+        return [{ type: 'text', text: `File: ${path} (${lines} lines, ${chars} chars)\n\n${content}` }];
     },
 };
 export const writeFileTool = {
     definition: {
         name: 'write_file',
-        description: 'Write content to a file (creates or overwrites)',
+        description: 'Write content to a file on the server. Creates the file and parent directories if they do not exist. Overwrites existing file.',
         inputSchema: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Path to the file to write' },
+                path: { type: 'string', description: 'Path to the file on the server' },
                 content: { type: 'string', description: 'Content to write to the file' },
             },
             required: ['path', 'content'],
@@ -126,11 +60,39 @@ export const writeFileTool = {
         if (!result.success) {
             return { success: false, error: result.error };
         }
+        return { success: true, data: { path: params.path } };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        return [{ type: 'text', text: `File written: ${result.data.path}` }];
+    },
+};
+export const listDirectoryTool = {
+    definition: {
+        name: 'list_directory',
+        description: 'List contents of a directory on the server. Returns file and directory names with types.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the directory (defaults to home directory)' },
+            },
+            required: [],
+        },
+        annotations: { readOnlyHint: true },
+    },
+    async execute(params, client) {
+        const dirPath = params.path || '~';
+        const result = await client.listFiles(dirPath);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
         return {
             success: true,
             data: {
-                path: params.path,
-                lineCount: params.content.split('\n').length,
+                path: dirPath,
+                entries: result.data || [],
             },
         };
     },
@@ -138,16 +100,187 @@ export const writeFileTool = {
         if (!result.success) {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
-        const { path, lineCount } = result.data;
-        return [{ type: 'text', text: `Wrote ${lineCount} lines to ${path}` }];
+        const { path, entries } = result.data;
+        if (entries.length === 0) {
+            return [{ type: 'text', text: `Directory: ${path}\n(empty)` }];
+        }
+        const lines = entries.map(e => {
+            const icon = e.type === 'directory' ? '📁' : '📄';
+            return `  ${icon} ${e.name}`;
+        });
+        return [{ type: 'text', text: `Directory: ${path} (${entries.length} items)\n${lines.join('\n')}` }];
+    },
+};
+export const deleteFileTool = {
+    definition: {
+        name: 'delete_file',
+        description: 'Delete a file or directory from the server. Directories are deleted recursively.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the file or directory to delete' },
+            },
+            required: ['path'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        const result = await client.deleteFile(params.path);
+        return result.success ? { success: true } : { success: false, error: result.error };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        return [{ type: 'text', text: 'File deleted' }];
+    },
+};
+export const renameFileTool = {
+    definition: {
+        name: 'rename_file',
+        description: 'Rename or move a file or directory on the server.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                old_path: { type: 'string', description: 'Current path of the file or directory' },
+                new_path: { type: 'string', description: 'New path for the file or directory' },
+            },
+            required: ['old_path', 'new_path'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        const result = await client.renameFile(params.old_path, params.new_path);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return {
+            success: true,
+            data: {
+                oldPath: params.old_path,
+                newPath: params.new_path,
+            },
+        };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { oldPath, newPath } = result.data;
+        return [{ type: 'text', text: `Renamed: ${oldPath} → ${newPath}` }];
+    },
+};
+export const downloadFileTool = {
+    definition: {
+        name: 'download_file',
+        description: 'Download a file from the server to a local path. Supports both text and binary files.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                server_path: { type: 'string', description: 'Path to the file on the server' },
+                local_path: { type: 'string', description: 'Local path to save the file' },
+            },
+            required: ['server_path', 'local_path'],
+        },
+        annotations: { readOnlyHint: true },
+    },
+    async execute(params, client) {
+        // Fetch from server (returns Buffer)
+        const result = await client.downloadFile(params.server_path);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        // Write to local filesystem (MCP server runs locally)
+        try {
+            const fs = await import('node:fs/promises');
+            const path = await import('node:path');
+            // Create parent directories if needed
+            const parentDir = path.dirname(params.local_path);
+            await fs.mkdir(parentDir, { recursive: true });
+            // Write content as binary Buffer
+            await fs.writeFile(params.local_path, result.data.content);
+            const stats = await fs.stat(params.local_path);
+            return {
+                success: true,
+                data: {
+                    serverPath: params.server_path,
+                    localPath: params.local_path,
+                    size: stats.size,
+                },
+            };
+        }
+        catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            return { success: false, error: `Failed to write local file: ${error}` };
+        }
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { serverPath, localPath, size } = result.data;
+        return [{ type: 'text', text: `Downloaded: ${serverPath} → ${localPath} (${size} bytes)` }];
+    },
+};
+export const uploadFileTool = {
+    definition: {
+        name: 'upload_file',
+        description: 'Upload a local file to the server. Supports both text and binary files.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                local_path: { type: 'string', description: 'Local path of the file to upload' },
+                server_path: { type: 'string', description: 'Destination path on the server' },
+            },
+            required: ['local_path', 'server_path'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        // Read from local filesystem and upload via multipart
+        try {
+            const fs = await import('node:fs/promises');
+            const pathModule = await import('node:path');
+            const content = await fs.readFile(params.local_path);
+            const stats = await fs.stat(params.local_path);
+            const filename = pathModule.basename(params.local_path);
+            // Upload to server using multipart form
+            const result = await client.uploadFile(params.server_path, content, filename);
+            if (!result.success) {
+                return { success: false, error: result.error };
+            }
+            return {
+                success: true,
+                data: {
+                    localPath: params.local_path,
+                    serverPath: params.server_path,
+                    size: stats.size,
+                },
+            };
+        }
+        catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            return { success: false, error: `Failed to upload file: ${error}` };
+        }
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { localPath, serverPath, size } = result.data;
+        return [{ type: 'text', text: `Uploaded: ${localPath} → ${serverPath} (${size} bytes)` }];
     },
 };
 // =============================================================================
 // Export all file tools
 // =============================================================================
 export const fileTools = [
-    listFilesTool,
     readFileTool,
     writeFileTool,
+    listDirectoryTool,
+    deleteFileTool,
+    renameFileTool,
+    downloadFileTool,
+    uploadFileTool,
 ];
 //# sourceMappingURL=files.js.map

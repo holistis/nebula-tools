@@ -15,16 +15,19 @@ export type { Tool, ToolDefinition, ToolResult, MCPContent } from './types.js';
 import { notebookTools } from './notebook.js';
 import { kernelTools } from './kernel.js';
 import { executionTools } from './execution.js';
+import { fileTools } from './files.js';
 
 // Re-export tool categories for direct access
 export { notebookTools } from './notebook.js';
 export { kernelTools } from './kernel.js';
 export { executionTools } from './execution.js';
+export { fileTools } from './files.js';
 
 // Re-export individual tools for TypeScript consumers who need type safety
 export * from './notebook.js';
 export * from './kernel.js';
 export * from './execution.js';
+export * from './files.js';
 
 /**
  * All tools combined in a single array
@@ -33,6 +36,7 @@ export const allTools: Tool<any, any>[] = [
   ...notebookTools,
   ...kernelTools,
   ...executionTools,
+  ...fileTools,
 ];
 
 /**
@@ -104,7 +108,7 @@ export async function executeToolForMCP(
 
     // Use custom formatter if available, otherwise default JSON
     if (tool.formatForMCP) {
-      const content = tool.formatForMCP(result);
+      const content = await tool.formatForMCP(result);
       if (backend) {
         content.push({ type: 'text', text: `Backend: ${backend}` });
       }
@@ -159,6 +163,7 @@ export const toolCategories = {
   notebook: notebookTools,
   kernel: kernelTools,
   execution: executionTools,
+  files: fileTools,
 } as const;
 
 /**
@@ -169,5 +174,6 @@ export function getToolNamesByCategory(): Record<string, string[]> {
     notebook: notebookTools.map(t => t.definition.name),
     kernel: kernelTools.map(t => t.definition.name),
     execution: executionTools.map(t => t.definition.name),
+    files: fileTools.map(t => t.definition.name),
   };
 }

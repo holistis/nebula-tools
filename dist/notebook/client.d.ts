@@ -70,6 +70,14 @@ export interface NebulaClientConfig {
     timeout?: number;
     /** Number of retries for transient errors (default: 3) */
     retries?: number;
+    /** Optional agent session ID for lock enforcement */
+    agentId?: string;
+    /** Optional client name for lock metadata */
+    clientName?: string;
+    /** Optional client version for lock metadata */
+    clientVersion?: string;
+    /** Auto-start agent session for write operations (default: true if agentId provided) */
+    autoStartAgentSession?: boolean;
 }
 export interface KernelSession {
     sessionId: string;
@@ -123,7 +131,16 @@ export declare class NebulaClient {
     private baseUrl;
     private timeout;
     private retries;
+    private agentId?;
+    private clientName?;
+    private clientVersion?;
+    private autoStartAgentSession;
+    private activeAgentSessions;
+    private agentSessionInFlight;
+    private lastBackend?;
     constructor(config?: NebulaClientConfig);
+    private recordBackend;
+    consumeLastBackend(): 'ui' | 'headless' | undefined;
     /**
      * Check if an error is retryable (network/connection errors)
      */
@@ -194,9 +211,33 @@ export declare class NebulaClient {
         content: string;
     }>>;
     /**
-     * Write content to a file
+     * Write content to a file (creates file and parent directories if needed)
      */
     writeFile(path: string, content: string): Promise<ToolResult<void>>;
+    /**
+     * Delete a file or directory
+     */
+    deleteFile(path: string): Promise<ToolResult<void>>;
+    /**
+     * Rename or move a file or directory
+     */
+    renameFile(oldPath: string, newPath: string): Promise<ToolResult<{
+        file: {
+            name: string;
+            path: string;
+        };
+    }>>;
+    /**
+     * Download a file as Buffer (supports both text and binary)
+     * Uses the /fs/download endpoint that streams raw file content
+     */
+    downloadFile(serverPath: string): Promise<ToolResult<{
+        content: Buffer;
+    }>>;
+    /**
+     * Upload a file using multipart form data (supports binary)
+     */
+    uploadFile(destDir: string, content: Buffer, filename: string): Promise<ToolResult<void>>;
     /**
      * Get the metadata schema from Nebula API
      */
@@ -252,7 +293,11 @@ export declare class NebulaClient {
      *
      * From the agent's perspective, both modes behave identically.
      */
-    applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>>;
+    applyOperation(operation: import('../types.js').NotebookOperation, options?: {
+        timeout?: number;
+    }): Promise<ToolResult<import('../types.js').OperationResult>>;
+    private isWriteOperation;
+    private ensureAgentSession;
     /**
      * Read notebook through the operation router.
      *
@@ -397,6 +442,7 @@ export declare class NebulaClient {
             is_binary?: boolean;
         }>;
         executionCount?: number;
+        executionStatus?: 'idle' | 'busy' | 'error';
         cellId: string;
         cellIndex: number;
         temp_files?: string[];

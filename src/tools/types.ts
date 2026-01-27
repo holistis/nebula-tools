@@ -63,8 +63,9 @@ export interface Tool<TParams = Record<string, unknown>, TResult = unknown> {
   /**
    * Optional: Format result for MCP display.
    * If not provided, default JSON formatting is used.
+   * Can be async for image resizing operations.
    */
-  formatForMCP?: (result: ToolResult<TResult>) => MCPContent;
+  formatForMCP?: (result: ToolResult<TResult>) => MCPContent | Promise<MCPContent>;
 }
 
 /**

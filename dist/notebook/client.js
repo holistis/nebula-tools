@@ -69,10 +69,31 @@ export class NebulaClient {
     baseUrl;
     timeout;
     retries;
+    agentId;
+    clientName;
+    clientVersion;
+    autoStartAgentSession;
+    activeAgentSessions = new Set();
+    agentSessionInFlight = new Map();
+    lastBackend;
     constructor(config = {}) {
         this.baseUrl = config.baseUrl || 'http://localhost:8000';
         this.timeout = config.timeout || 30000;
         this.retries = config.retries ?? 3;
+        this.agentId = config.agentId;
+        this.clientName = config.clientName;
+        this.clientVersion = config.clientVersion;
+        this.autoStartAgentSession = config.autoStartAgentSession ?? Boolean(config.agentId);
+    }
+    recordBackend(backend) {
+        if (backend) {
+            this.lastBackend = backend;
+        }
+    }
+    consumeLastBackend() {
+        const backend = this.lastBackend;
+        this.lastBackend = undefined;
+        return backend;
     }
     /**
      * Check if an error is retryable (network/connection errors)
@@ -97,11 +118,12 @@ export class NebulaClient {
     /**
      * Fetch with automatic retry for transient errors
      */
-    async fetch(path, options = {}) {
+    async fetch(path, options = {}, customTimeout) {
         let lastError = 'Unknown error';
+        const timeout = customTimeout ?? this.timeout;
         for (let attempt = 0; attempt < this.retries; attempt++) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
             try {
                 const response = await fetch(`${this.baseUrl}${path}`, {
                     ...options,
@@ -369,13 +391,93 @@ export class NebulaClient {
         return { success: true, data: { content: result.data.content } };
     }
     /**
-     * Write content to a file
+     * Write content to a file (creates file and parent directories if needed)
      */
     async writeFile(path, content) {
         return this.fetch('/api/fs/write', {
             method: 'POST',
             body: JSON.stringify({ path, content, file_type: 'text' }),
         });
+    }
+    /**
+     * Delete a file or directory
+     */
+    async deleteFile(path) {
+        return this.fetch(`/api/fs/delete?path=${encodeURIComponent(path)}`, {
+            method: 'DELETE',
+        });
+    }
+    /**
+     * Rename or move a file or directory
+     */
+    async renameFile(oldPath, newPath) {
+        return this.fetch('/api/fs/rename', {
+            method: 'POST',
+            body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
+        });
+    }
+    /**
+     * Download a file as Buffer (supports both text and binary)
+     * Uses the /fs/download endpoint that streams raw file content
+     */
+    async downloadFile(serverPath) {
+        try {
+            const url = `${this.baseUrl}/api/fs/download?path=${encodeURIComponent(serverPath)}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                const errorText = await response.text();
+                let errorDetail = 'Download failed';
+                try {
+                    const errorJson = JSON.parse(errorText);
+                    errorDetail = errorJson.detail || errorDetail;
+                }
+                catch {
+                    errorDetail = errorText || errorDetail;
+                }
+                return { success: false, error: errorDetail };
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            const content = Buffer.from(arrayBuffer);
+            return { success: true, data: { content } };
+        }
+        catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            return { success: false, error: `Download failed: ${error}` };
+        }
+    }
+    /**
+     * Upload a file using multipart form data (supports binary)
+     */
+    async uploadFile(destDir, content, filename) {
+        try {
+            // Create a Blob from the Buffer for FormData
+            const blob = new Blob([content]);
+            const formData = new FormData();
+            formData.append('file', blob, filename);
+            formData.append('path', destDir);
+            const url = `${this.baseUrl}/api/fs/upload`;
+            const response = await fetch(url, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                let errorDetail = 'Upload failed';
+                try {
+                    const errorJson = JSON.parse(errorText);
+                    errorDetail = errorJson.detail || errorDetail;
+                }
+                catch {
+                    errorDetail = errorText || errorDetail;
+                }
+                return { success: false, error: errorDetail };
+            }
+            return { success: true };
+        }
+        catch (e) {
+            const error = e instanceof Error ? e.message : String(e);
+            return { success: false, error: `Upload failed: ${error}` };
+        }
     }
     /**
      * Get the metadata schema from Nebula API
@@ -702,11 +804,56 @@ export class NebulaClient {
      *
      * From the agent's perspective, both modes behave identically.
      */
-    async applyOperation(operation) {
-        return this.fetch('/api/notebook/operation', {
+    async applyOperation(operation, options) {
+        if (this.agentId) {
+            operation.agentId = this.agentId;
+            if (this.clientName) {
+                operation.clientName = this.clientName;
+            }
+            if (this.clientVersion) {
+                operation.clientVersion = this.clientVersion;
+            }
+            if (this.autoStartAgentSession && this.isWriteOperation(operation.type)) {
+                const ensured = await this.ensureAgentSession(operation.notebookPath);
+                if (!ensured.success) {
+                    return { success: false, error: ensured.error };
+                }
+            }
+        }
+        const result = await this.fetch('/api/notebook/operation', {
             method: 'POST',
             body: JSON.stringify({ operation }),
-        });
+        }, options?.timeout);
+        if (result.success) {
+            this.recordBackend(result.data?.backend);
+        }
+        return result;
+    }
+    isWriteOperation(opType) {
+        const readOnlyOps = new Set(['readCell', 'readCellOutput', 'searchCells', 'readNotebook']);
+        const sessionOps = new Set(['startAgentSession', 'endAgentSession']);
+        return !readOnlyOps.has(opType) && !sessionOps.has(opType);
+    }
+    async ensureAgentSession(path) {
+        if (!this.agentId) {
+            return { success: true, data: {} };
+        }
+        if (this.activeAgentSessions.has(path)) {
+            return { success: true, data: {} };
+        }
+        const inFlight = this.agentSessionInFlight.get(path);
+        if (inFlight) {
+            return inFlight;
+        }
+        const startPromise = this.startAgentSession(path, this.agentId);
+        this.agentSessionInFlight.set(path, startPromise);
+        try {
+            const result = await startPromise;
+            return result;
+        }
+        finally {
+            this.agentSessionInFlight.delete(path);
+        }
     }
     /**
      * Read notebook through the operation router.
@@ -738,6 +885,7 @@ export class NebulaClient {
         }
         // Router returns response with success/data/error structure
         const routerResult = result.data;
+        this.recordBackend(routerResult.backend);
         if (!routerResult.success) {
             return { success: false, error: routerResult.error };
         }
@@ -747,6 +895,7 @@ export class NebulaClient {
                 path: routerResult.data.path,
                 cells: routerResult.data.cells,
                 metadata: routerResult.data.metadata,
+                backend: routerResult.backend,
             },
         };
     }
@@ -1029,6 +1178,7 @@ export class NebulaClient {
             data: {
                 outputs: opResult.outputs || [],
                 executionCount: opResult.executionCount,
+                executionStatus: opResult.executionStatus,
                 cellId: opResult.cellId,
                 cellIndex: opResult.cellIndex,
                 temp_files: opResult.temp_files,
@@ -1203,7 +1353,11 @@ export class NebulaClient {
             maxWait: options.maxWait,
             saveOutputs: options.saveOutputs,
         };
-        const result = await this.applyOperation(operation);
+        // HTTP timeout should exceed maxWait to allow backend to return "busy" status
+        // Add 5 second buffer for network latency
+        const maxWait = options.maxWait ?? 10;
+        const httpTimeout = (maxWait + 5) * 1000;
+        const result = await this.applyOperation(operation, { timeout: httpTimeout });
         if (!result.success) {
             return { success: false, error: result.error };
         }
@@ -1253,7 +1407,9 @@ export class NebulaClient {
         const operation = {
             type: 'startAgentSession',
             notebookPath: path,
-            agentId,
+            agentId: agentId || this.agentId,
+            clientName: this.clientName,
+            clientVersion: this.clientVersion,
         };
         const result = await this.applyOperation(operation);
         if (!result.success) {
@@ -1263,6 +1419,7 @@ export class NebulaClient {
         if (!opResult.success) {
             return { success: false, error: opResult.error };
         }
+        this.activeAgentSessions.add(path);
         return {
             success: true,
             data: {
@@ -1287,6 +1444,7 @@ export class NebulaClient {
         if (!opResult.success) {
             return { success: false, error: opResult.error };
         }
+        this.activeAgentSessions.delete(path);
         return {
             success: true,
             data: {

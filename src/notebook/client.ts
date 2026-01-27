@@ -199,13 +199,15 @@ export class NebulaClient {
    */
   private async fetch<T>(
     path: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    customTimeout?: number
   ): Promise<ToolResult<T>> {
     let lastError: string = 'Unknown error';
+    const timeout = customTimeout ?? this.timeout;
 
     for (let attempt = 0; attempt < this.retries; attempt++) {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       try {
         const response = await fetch(`${this.baseUrl}${path}`, {
@@ -535,13 +537,104 @@ export class NebulaClient {
   }
 
   /**
-   * Write content to a file
+   * Write content to a file (creates file and parent directories if needed)
    */
   async writeFile(path: string, content: string): Promise<ToolResult<void>> {
     return this.fetch<void>('/api/fs/write', {
       method: 'POST',
       body: JSON.stringify({ path, content, file_type: 'text' }),
     });
+  }
+
+  /**
+   * Delete a file or directory
+   */
+  async deleteFile(path: string): Promise<ToolResult<void>> {
+    return this.fetch<void>(`/api/fs/delete?path=${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * Rename or move a file or directory
+   */
+  async renameFile(oldPath: string, newPath: string): Promise<ToolResult<{ file: { name: string; path: string } }>> {
+    return this.fetch<{ file: { name: string; path: string } }>('/api/fs/rename', {
+      method: 'POST',
+      body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
+    });
+  }
+
+  /**
+   * Download a file as Buffer (supports both text and binary)
+   * Uses the /fs/download endpoint that streams raw file content
+   */
+  async downloadFile(serverPath: string): Promise<ToolResult<{ content: Buffer }>> {
+    try {
+      const url = `${this.baseUrl}/api/fs/download?path=${encodeURIComponent(serverPath)}`;
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorDetail = 'Download failed';
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorDetail = errorJson.detail || errorDetail;
+        } catch {
+          errorDetail = errorText || errorDetail;
+        }
+        return { success: false, error: errorDetail };
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const content = Buffer.from(arrayBuffer);
+
+      return { success: true, data: { content } };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      return { success: false, error: `Download failed: ${error}` };
+    }
+  }
+
+  /**
+   * Upload a file using multipart form data (supports binary)
+   */
+  async uploadFile(
+    destDir: string,
+    content: Buffer,
+    filename: string
+  ): Promise<ToolResult<void>> {
+    try {
+      // Create a Blob from the Buffer for FormData
+      const blob = new Blob([content]);
+
+      const formData = new FormData();
+      formData.append('file', blob, filename);
+      formData.append('path', destDir);
+
+      const url = `${this.baseUrl}/api/fs/upload`;
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorDetail = 'Upload failed';
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorDetail = errorJson.detail || errorDetail;
+        } catch {
+          errorDetail = errorText || errorDetail;
+        }
+        return { success: false, error: errorDetail };
+      }
+
+      return { success: true };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      return { success: false, error: `Upload failed: ${error}` };
+    }
   }
 
   /**
@@ -930,7 +1023,10 @@ export class NebulaClient {
    *
    * From the agent's perspective, both modes behave identically.
    */
-  async applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>> {
+  async applyOperation(
+    operation: import('../types.js').NotebookOperation,
+    options?: { timeout?: number }
+  ): Promise<ToolResult<import('../types.js').OperationResult>> {
     if (this.agentId) {
       (operation as import('../types.js').NotebookOperation & import('../types.js').AgentContextFields).agentId = this.agentId;
       if (this.clientName) {
@@ -947,10 +1043,14 @@ export class NebulaClient {
       }
     }
 
-    const result = await this.fetch<import('../types.js').OperationResult>('/api/notebook/operation', {
-      method: 'POST',
-      body: JSON.stringify({ operation }),
-    });
+    const result = await this.fetch<import('../types.js').OperationResult>(
+      '/api/notebook/operation',
+      {
+        method: 'POST',
+        body: JSON.stringify({ operation }),
+      },
+      options?.timeout
+    );
     if (result.success) {
       this.recordBackend(result.data?.backend);
     }
@@ -1696,7 +1796,12 @@ export class NebulaClient {
       saveOutputs: options.saveOutputs,
     };
 
-    const result = await this.applyOperation(operation);
+    // HTTP timeout should exceed maxWait to allow backend to return "busy" status
+    // Add 5 second buffer for network latency
+    const maxWait = options.maxWait ?? 10;
+    const httpTimeout = (maxWait + 5) * 1000;
+
+    const result = await this.applyOperation(operation, { timeout: httpTimeout });
     if (!result.success) {
       return { success: false, error: result.error };
     }

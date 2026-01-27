@@ -11,6 +11,7 @@
 import type { Tool, ToolResult, MCPContent } from './types.js';
 import type { NebulaClient } from '../notebook/client.js';
 import type { CellOutput } from '../types.js';
+import { resizeImageIfNeeded } from '../utils/imageResize.js';
 
 // =============================================================================
 // Shared Types (matches backend truncation metadata)
@@ -23,21 +24,26 @@ interface TruncatedOutput extends CellOutput {
   total_chars?: number;
 }
 
-function formatOutputs(outputs: TruncatedOutput[]): MCPContent {
-  return outputs.map(o => {
+async function formatOutputs(outputs: TruncatedOutput[]): Promise<MCPContent> {
+  const results: MCPContent = [];
+  for (const o of outputs) {
     if (o.type === 'image') {
-      return { type: 'image' as const, data: o.content, mimeType: 'image/png' };
-    }
-    const prefix = o.type === 'error' ? '[ERROR] ' : '';
-    let text = prefix + o.content;
+      // Resize images to fit Claude API limits (2000px max dimension)
+      const resizedData = await resizeImageIfNeeded(o.content);
+      results.push({ type: 'image' as const, data: resizedData, mimeType: 'image/png' });
+    } else {
+      const prefix = o.type === 'error' ? '[ERROR] ' : '';
+      let text = prefix + o.content;
 
-    // Add truncation info if applicable
-    if (o.truncated) {
-      text += `\n--- [TRUNCATED: ${o.truncation_reason}] ${o.total_lines} total lines, ${o.total_chars} total chars ---`;
-    }
+      // Add truncation info if applicable
+      if (o.truncated) {
+        text += `\n--- [TRUNCATED: ${o.truncation_reason}] ${o.total_lines} total lines, ${o.total_chars} total chars ---`;
+      }
 
-    return { type: 'text' as const, text };
-  });
+      results.push({ type: 'text' as const, text });
+    }
+  }
+  return results;
 }
 
 // =============================================================================
@@ -136,7 +142,7 @@ For long-running cells: If execution exceeds max_wait, returns with status="busy
     };
   },
 
-  formatForMCP(result) {
+  async formatForMCP(result) {
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
@@ -150,7 +156,7 @@ For long-running cells: If execution exceeds max_wait, returns with status="busy
 
     return [
       { type: 'text', text: `Cell ${cellId} executed in ${elapsed.toFixed(1)}s${savedMsg}${statusMsg}:\n` },
-      ...formatOutputs(outputs),
+      ...(await formatOutputs(outputs)),
     ];
   },
 };

@@ -4,6 +4,7 @@
  * Tools for reading, writing, and manipulating notebook cells.
  */
 import { createAdaptivePoller } from '../utils/polling.js';
+import { resizeImageIfNeeded } from '../utils/imageResize.js';
 // =============================================================================
 // Shared Utilities
 // =============================================================================
@@ -14,14 +15,20 @@ function formatCellPreview(cell, index) {
     const moreLines = cell.content.split('\n').length > 1 ? '...' : '';
     return `${index}: ${typeTag} id="${cell.id}"${execCount} ${firstLine}${moreLines}`;
 }
-function formatOutputs(outputs) {
-    return outputs.map(o => {
+async function formatOutputs(outputs) {
+    const results = [];
+    for (const o of outputs) {
         if (o.type === 'image') {
-            return { type: 'image', data: o.content, mimeType: 'image/png' };
+            // Resize images to fit Claude API limits (2000px max dimension)
+            const resizedData = await resizeImageIfNeeded(o.content);
+            results.push({ type: 'image', data: resizedData, mimeType: 'image/png' });
         }
-        const prefix = o.type === 'error' ? '[ERROR] ' : '';
-        return { type: 'text', text: prefix + o.content };
-    });
+        else {
+            const prefix = o.type === 'error' ? '[ERROR] ' : '';
+            results.push({ type: 'text', text: prefix + o.content });
+        }
+    }
+    return results;
 }
 export const readNotebookTool = {
     definition: {
@@ -60,6 +67,7 @@ export const readNotebookTool = {
                 path: params.path,
                 cells: notebook.cells,
                 totalCells: notebook.cells.length,
+                backend: notebook.backend,
             },
         };
     },
@@ -113,7 +121,7 @@ export const readCellTool = {
 export const readOutputTool = {
     definition: {
         name: 'read_output',
-        description: `Read cell outputs. Use max_wait to poll for new outputs from long-running executions (returns when new output appears or timeout). Regular outputs truncated to 100 lines, errors get 200 lines. Use save_to_file=true for complete output.`,
+        description: `Read cell outputs. By default waits for completion or max_wait timeout (returns once). Set wait_for_completion=false to return as soon as new output appears. Regular outputs truncated to 100 lines, errors get 200 lines. Use save_to_file=true for complete output.`,
         inputSchema: {
             type: 'object',
             properties: {
@@ -121,7 +129,8 @@ export const readOutputTool = {
                 cell_index: { type: 'number', description: 'Cell index (0-based). Use this OR cell_id.' },
                 cell_id: { type: 'string', description: 'Stable cell ID. Use this OR cell_index.' },
                 output_offset: { type: 'number', description: 'Skip first N outputs (default: 0)' },
-                max_wait: { type: 'number', description: 'Wait up to N seconds for new outputs (default: 0). Use for polling long-running cells.' },
+                max_wait: { type: 'number', description: 'Wait up to N seconds for completion or timeout (default: 60). Set 0 for immediate read.' },
+                wait_for_completion: { type: 'boolean', description: 'Wait for completion or timeout (default: true). If false, return on new output.' },
                 max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
                 max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
                 max_lines_error: { type: 'number', description: 'Max lines per error output (default: 200)' },
@@ -137,7 +146,8 @@ export const readOutputTool = {
         if (params.cell_index === undefined && !params.cell_id) {
             return { success: false, error: 'Must provide cell_index or cell_id' };
         }
-        const maxWait = params.max_wait ?? 0;
+        const waitForCompletion = params.wait_for_completion ?? true;
+        const maxWait = params.max_wait ?? (waitForCompletion ? 60 : 0);
         // Build truncation options
         const truncationOpts = {
             maxLines: params.max_lines,
@@ -186,8 +196,22 @@ export const readOutputTool = {
             const allOutputs = result.data.outputs;
             const offset = params.output_offset ?? 0;
             const newOutputs = offset > 0 ? allOutputs.slice(offset) : allOutputs;
-            // If we have new outputs since last poll, return them
-            if (allOutputs.length > lastOutputCount) {
+            const executionStatus = result.data.executionStatus;
+            // Return on new output only when wait_for_completion is false
+            if (!waitForCompletion && allOutputs.length > lastOutputCount) {
+                return {
+                    success: true,
+                    data: {
+                        cellId: result.data.cellId,
+                        cellIndex: result.data.cellIndex,
+                        outputs: newOutputs,
+                        totalOutputs: allOutputs.length,
+                        temp_files: result.data.temp_files,
+                    },
+                };
+            }
+            // If backend provides execution status and it's no longer busy, return current outputs
+            if (waitForCompletion && executionStatus && executionStatus !== 'busy') {
                 return {
                     success: true,
                     data: {
@@ -225,7 +249,7 @@ export const readOutputTool = {
             },
         };
     },
-    formatForMCP(result) {
+    async formatForMCP(result) {
         if (!result.success) {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
@@ -242,9 +266,10 @@ export const readOutputTool = {
         mcpOutputs.push({ type: 'text', text: headerInfo + '\n' });
         // Format each output with truncation metadata
         for (const output of outputs) {
-            // Images are returned as-is (not affected by truncation limits)
+            // Images are resized to fit Claude API limits (2000px max dimension)
             if (output.type === 'image') {
-                mcpOutputs.push({ type: 'image', data: output.content, mimeType: 'image/png' });
+                const resizedData = await resizeImageIfNeeded(output.content);
+                mcpOutputs.push({ type: 'image', data: resizedData, mimeType: 'image/png' });
                 continue;
             }
             let text = output.type === 'error' ? '[ERROR] ' + output.content : output.content;
@@ -627,7 +652,11 @@ export const updateMetadataTool = {
 export const connectServerTool = {
     definition: {
         name: 'connect_server',
-        description: 'Connect to a Nebula server. All subsequent operations will use this connection. Use this to switch between different Nebula instances (e.g., local vs SSH-tunneled remote).',
+        description: `Connect to a Nebula server. Call this ONCE at the start of your session if you need to use a non-default server (e.g., SSH-tunneled remote). All subsequent operations will use this connection.
+
+RECOMMENDED WORKFLOW:
+1. connect_server (once, if needed for non-default URL)
+2. For each response: start_agent_session → operations → end_agent_session`,
         inputSchema: {
             type: 'object',
             properties: {
@@ -651,7 +680,14 @@ export const connectServerTool = {
 export const startAgentSessionTool = {
     definition: {
         name: 'start_agent_session',
-        description: 'Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. Use connect_server first if you need to work with a different Nebula instance.',
+        description: `Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. IMPORTANT: call connect_server first if you're not sure you're on the correct Nebula URL (tools default to NEBULA_URL or http://localhost:3000).
+
+This call validates that the notebook path exists; it will error if the path is wrong or missing.
+
+IMPORTANT: Call this at the START of each response before any notebook operations, and call end_agent_session at the END of each response. This ensures the notebook is only locked while you're actively working on it.
+
+Example flow for each response:
+  start_agent_session → insert_cell/update_cell/execute_cell/etc → end_agent_session`,
         inputSchema: {
             type: 'object',
             properties: {
@@ -687,7 +723,9 @@ export const startAgentSessionTool = {
 export const endAgentSessionTool = {
     definition: {
         name: 'end_agent_session',
-        description: 'End an agent session, unlocking the notebook for user edits. Always call this when agent work is complete.',
+        description: `End an agent session, unlocking the notebook for user edits. Always call this at the END of each response after completing all notebook operations.
+
+IMPORTANT: Always call this before finishing your response, even if operations failed. This ensures the notebook is unlocked for the user.`,
         inputSchema: {
             type: 'object',
             properties: {

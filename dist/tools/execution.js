@@ -7,19 +7,26 @@
  * read_notebook and read_output tools. After execution, outputs are
  * read back via readCellOutputOp which applies backend truncation.
  */
-function formatOutputs(outputs) {
-    return outputs.map(o => {
+import { resizeImageIfNeeded } from '../utils/imageResize.js';
+async function formatOutputs(outputs) {
+    const results = [];
+    for (const o of outputs) {
         if (o.type === 'image') {
-            return { type: 'image', data: o.content, mimeType: 'image/png' };
+            // Resize images to fit Claude API limits (2000px max dimension)
+            const resizedData = await resizeImageIfNeeded(o.content);
+            results.push({ type: 'image', data: resizedData, mimeType: 'image/png' });
         }
-        const prefix = o.type === 'error' ? '[ERROR] ' : '';
-        let text = prefix + o.content;
-        // Add truncation info if applicable
-        if (o.truncated) {
-            text += `\n--- [TRUNCATED: ${o.truncation_reason}] ${o.total_lines} total lines, ${o.total_chars} total chars ---`;
+        else {
+            const prefix = o.type === 'error' ? '[ERROR] ' : '';
+            let text = prefix + o.content;
+            // Add truncation info if applicable
+            if (o.truncated) {
+                text += `\n--- [TRUNCATED: ${o.truncation_reason}] ${o.total_lines} total lines, ${o.total_chars} total chars ---`;
+            }
+            results.push({ type: 'text', text });
         }
-        return { type: 'text', text };
-    });
+    }
+    return results;
 }
 export const executeCellTool = {
     definition: {
@@ -84,7 +91,7 @@ For long-running cells: If execution exceeds max_wait, returns with status="busy
             },
         };
     },
-    formatForMCP(result) {
+    async formatForMCP(result) {
         if (!result.success) {
             return [{ type: 'text', text: `Error: ${result.error}` }];
         }
@@ -96,7 +103,7 @@ For long-running cells: If execution exceeds max_wait, returns with status="busy
         }
         return [
             { type: 'text', text: `Cell ${cellId} executed in ${elapsed.toFixed(1)}s${savedMsg}${statusMsg}:\n` },
-            ...formatOutputs(outputs),
+            ...(await formatOutputs(outputs)),
         ];
     },
 };
