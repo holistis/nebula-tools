@@ -118,12 +118,11 @@ export class NebulaClient {
     /**
      * Fetch with automatic retry for transient errors
      */
-    async fetch(path, options = {}, customTimeout) {
+    async fetch(path, options = {}) {
         let lastError = 'Unknown error';
-        const timeout = customTimeout ?? this.timeout;
         for (let attempt = 0; attempt < this.retries; attempt++) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            const timeoutId = setTimeout(() => controller.abort(), this.timeout);
             try {
                 const response = await fetch(`${this.baseUrl}${path}`, {
                     ...options,
@@ -391,7 +390,7 @@ export class NebulaClient {
         return { success: true, data: { content: result.data.content } };
     }
     /**
-     * Write content to a file (creates file and parent directories if needed)
+     * Write content to a file
      */
     async writeFile(path, content) {
         return this.fetch('/api/fs/write', {
@@ -408,7 +407,7 @@ export class NebulaClient {
         });
     }
     /**
-     * Rename or move a file or directory
+     * Rename/move a file or directory
      */
     async renameFile(oldPath, newPath) {
         return this.fetch('/api/fs/rename', {
@@ -450,7 +449,6 @@ export class NebulaClient {
      */
     async uploadFile(destDir, content, filename) {
         try {
-            // Create a Blob from the Buffer for FormData
             const blob = new Blob([content]);
             const formData = new FormData();
             formData.append('file', blob, filename);
@@ -804,7 +802,7 @@ export class NebulaClient {
      *
      * From the agent's perspective, both modes behave identically.
      */
-    async applyOperation(operation, options) {
+    async applyOperation(operation) {
         if (this.agentId) {
             operation.agentId = this.agentId;
             if (this.clientName) {
@@ -823,7 +821,7 @@ export class NebulaClient {
         const result = await this.fetch('/api/notebook/operation', {
             method: 'POST',
             body: JSON.stringify({ operation }),
-        }, options?.timeout);
+        });
         if (result.success) {
             this.recordBackend(result.data?.backend);
         }
@@ -1353,11 +1351,7 @@ export class NebulaClient {
             maxWait: options.maxWait,
             saveOutputs: options.saveOutputs,
         };
-        // HTTP timeout should exceed maxWait to allow backend to return "busy" status
-        // Add 5 second buffer for network latency
-        const maxWait = options.maxWait ?? 10;
-        const httpTimeout = (maxWait + 5) * 1000;
-        const result = await this.applyOperation(operation, { timeout: httpTimeout });
+        const result = await this.applyOperation(operation);
         if (!result.success) {
             return { success: false, error: result.error };
         }

@@ -15,7 +15,7 @@ export class NebulaMCPServer {
     agentId;
     clientName;
     clientVersion;
-    supportedProtocols = ['2025-11-25', '2025-06-18', '2024-11-05'];
+    supportedProtocols = ['2025-06-18', '2024-11-05'];
     defaultProtocol = '2024-11-05';
     constructor() {
         // Environment variable: NEBULA_URL (e.g., http://localhost:3000)

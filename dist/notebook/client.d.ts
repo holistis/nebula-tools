@@ -211,7 +211,7 @@ export declare class NebulaClient {
         content: string;
     }>>;
     /**
-     * Write content to a file (creates file and parent directories if needed)
+     * Write content to a file
      */
     writeFile(path: string, content: string): Promise<ToolResult<void>>;
     /**
@@ -219,14 +219,9 @@ export declare class NebulaClient {
      */
     deleteFile(path: string): Promise<ToolResult<void>>;
     /**
-     * Rename or move a file or directory
+     * Rename/move a file or directory
      */
-    renameFile(oldPath: string, newPath: string): Promise<ToolResult<{
-        file: {
-            name: string;
-            path: string;
-        };
-    }>>;
+    renameFile(oldPath: string, newPath: string): Promise<ToolResult<void>>;
     /**
      * Download a file as Buffer (supports both text and binary)
      * Uses the /fs/download endpoint that streams raw file content
@@ -293,9 +288,7 @@ export declare class NebulaClient {
      *
      * From the agent's perspective, both modes behave identically.
      */
-    applyOperation(operation: import('../types.js').NotebookOperation, options?: {
-        timeout?: number;
-    }): Promise<ToolResult<import('../types.js').OperationResult>>;
+    applyOperation(operation: import('../types.js').NotebookOperation): Promise<ToolResult<import('../types.js').OperationResult>>;
     private isWriteOperation;
     private ensureAgentSession;
     /**

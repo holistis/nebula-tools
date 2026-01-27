@@ -31,7 +31,7 @@ export class NebulaMCPServer {
   private agentId: string;
   private clientName: string;
   private clientVersion: string;
-  private readonly supportedProtocols = ['2025-11-25', '2025-06-18', '2024-11-05'] as const;
+  private readonly supportedProtocols = ['2025-06-18', '2024-11-05'] as const;
   private readonly defaultProtocol = '2024-11-05';
 
   constructor() {
