@@ -14,6 +14,7 @@ import {
   notebookTools,
   kernelTools,
   executionTools,
+  fileTools,
 
   // Tool utilities
   getToolDefinitions,
@@ -53,14 +54,15 @@ describe('Tool Collections', () => {
       const expectedCount =
         notebookTools.length +
         kernelTools.length +
-        executionTools.length;
+        executionTools.length +
+        fileTools.length;
 
       expect(allTools.length).toBe(expectedCount);
     });
 
-    it('should contain 20 total tools', () => {
-      // 14 notebook + 5 kernel + 1 execution = 20
-      expect(allTools.length).toBe(20);
+    it('should contain 30 total tools', () => {
+      // 17 notebook + 5 kernel + 1 execution + 7 files = 30
+      expect(allTools.length).toBe(30);
     });
 
     it('should have unique tool names', () => {
@@ -93,6 +95,7 @@ describe('Tool Collections', () => {
         'notebook',
         'kernel',
         'execution',
+        'files',
       ]);
     });
 
@@ -100,12 +103,13 @@ describe('Tool Collections', () => {
       expect(toolCategories.notebook).toBe(notebookTools);
       expect(toolCategories.kernel).toBe(kernelTools);
       expect(toolCategories.execution).toBe(executionTools);
+      expect(toolCategories.files).toBe(fileTools);
     });
   });
 
   describe('Individual Tool Arrays', () => {
-    it('notebookTools should have 14 tools', () => {
-      expect(notebookTools.length).toBe(14);
+    it('notebookTools should have 17 tools', () => {
+      expect(notebookTools.length).toBe(17);
     });
 
     it('kernelTools should have 5 tools', () => {
@@ -114,6 +118,10 @@ describe('Tool Collections', () => {
 
     it('executionTools should have 1 tool', () => {
       expect(executionTools.length).toBe(1);
+    });
+
+    it('fileTools should have 7 tools', () => {
+      expect(fileTools.length).toBe(7);
     });
   });
 });
@@ -416,9 +424,10 @@ describe('Tool Utility Functions', () => {
     it('should have correct counts per category', () => {
       const byCategory = getToolNamesByCategory();
 
-      expect(byCategory.notebook.length).toBe(14);
+      expect(byCategory.notebook.length).toBe(17);
       expect(byCategory.kernel.length).toBe(5);
       expect(byCategory.execution.length).toBe(1);
+      expect(byCategory.files.length).toBe(7);
     });
   });
 });
@@ -428,8 +437,8 @@ describe('Tool Utility Functions', () => {
 // =============================================================================
 describe('formatForMCP Functions', () => {
   describe('Success Formatting', () => {
-    it('read_notebook should format cell list', () => {
-      const result = readNotebookTool.formatForMCP!({
+    it('read_notebook should format cell list', async () => {
+      const result = await readNotebookTool.formatForMCP!({
         success: true,
         data: {
           path: '/test.ipynb',
@@ -447,8 +456,8 @@ describe('formatForMCP Functions', () => {
       expect((result[0] as { type: 'text'; text: string }).text).toContain('2 cells');
     });
 
-    it('read_cell should format cell content', () => {
-      const result = readCellTool.formatForMCP!({
+    it('read_cell should format cell content', async () => {
+      const result = await readCellTool.formatForMCP!({
         success: true,
         data: {
           cell: { id: 'test-cell', type: 'code', content: 'x = 1', outputs: [], executionCount: 5 },
@@ -463,8 +472,8 @@ describe('formatForMCP Functions', () => {
       expect((result[0] as { type: 'text'; text: string }).text).toContain('x = 1');
     });
 
-    it('list_kernels should format kernel list with display names', () => {
-      const result = listKernelsTool.formatForMCP!({
+    it('list_kernels should format kernel list with display names', async () => {
+      const result = await listKernelsTool.formatForMCP!({
         success: true,
         data: {
           kernels: [
@@ -484,7 +493,7 @@ describe('formatForMCP Functions', () => {
   });
 
   describe('Error Formatting', () => {
-    it('should format errors consistently', () => {
+    it('should format errors consistently', async () => {
       const tools = [
         readNotebookTool,
         readCellTool,
@@ -496,7 +505,7 @@ describe('formatForMCP Functions', () => {
       ];
 
       for (const tool of tools) {
-        const result = tool.formatForMCP!({
+        const result = await tool.formatForMCP!({
           success: false,
           error: 'Test error message',
         });
@@ -510,18 +519,18 @@ describe('formatForMCP Functions', () => {
   });
 
   describe('Empty Results', () => {
-    it('search_cells should handle no results', () => {
-      const result = searchCellsTool.formatForMCP!({
+    it('search_cells should handle no results', async () => {
+      const result = await searchCellsTool.formatForMCP!({
         success: true,
-        data: { cells: [], totalCells: 10 },
+        data: { matches: [], matchCount: 0, hasMore: false },
       });
 
       expect(result[0].type).toBe('text');
       expect((result[0] as { type: 'text'; text: string }).text).toContain('No matching cells');
     });
 
-    it('list_kernels should handle empty list', () => {
-      const result = listKernelsTool.formatForMCP!({
+    it('list_kernels should handle empty list', async () => {
+      const result = await listKernelsTool.formatForMCP!({
         success: true,
         data: { kernels: [] },
       });

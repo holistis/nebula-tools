@@ -454,10 +454,14 @@ describe('MCP Tool Execution Integration', () => {
       expect(hasTool('execute_code')).toBe(false);
     });
 
-    it('should not have file tools', () => {
-      expect(hasTool('list_files')).toBe(false);
-      expect(hasTool('read_file')).toBe(false);
-      expect(hasTool('write_file')).toBe(false);
+    it('should have file tools', () => {
+      expect(hasTool('list_directory')).toBe(true);
+      expect(hasTool('read_file')).toBe(true);
+      expect(hasTool('write_file')).toBe(true);
+      expect(hasTool('delete_file')).toBe(true);
+      expect(hasTool('rename_file')).toBe(true);
+      expect(hasTool('download_file')).toBe(true);
+      expect(hasTool('upload_file')).toBe(true);
     });
 
     it('should not have list_sessions tool', () => {
