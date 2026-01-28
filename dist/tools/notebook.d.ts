@@ -8,7 +8,7 @@ import type { NotebookCell, CellOutput } from '../types.js';
 export interface ReadNotebookParams {
     path: string;
     include_outputs?: boolean;
-    format?: 'brief' | 'detailed';
+    format?: 'brief' | 'content' | 'detailed';
     max_lines?: number;
     max_chars?: number;
     max_lines_error?: number;
@@ -21,7 +21,7 @@ export interface ReadNotebookResult {
     /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
     backend?: 'ui' | 'headless';
     /** Format used for display */
-    format?: 'brief' | 'detailed';
+    format?: 'brief' | 'content' | 'detailed';
     /** Whether outputs are included */
     includeOutputs?: boolean;
 }

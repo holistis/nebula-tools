@@ -44,7 +44,7 @@ async function formatOutputs(outputs: CellOutput[]): Promise<MCPContent> {
 export interface ReadNotebookParams {
   path: string;
   include_outputs?: boolean;
-  format?: 'brief' | 'detailed';
+  format?: 'brief' | 'content' | 'detailed';
   // Truncation parameters for outputs (when include_outputs=true)
   max_lines?: number;
   max_chars?: number;
@@ -60,7 +60,7 @@ export interface ReadNotebookResult {
   /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
   backend?: 'ui' | 'headless';
   /** Format used for display */
-  format?: 'brief' | 'detailed';
+  format?: 'brief' | 'content' | 'detailed';
   /** Whether outputs are included */
   includeOutputs?: boolean;
 }
@@ -68,13 +68,13 @@ export interface ReadNotebookResult {
 export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   definition: {
     name: 'read_notebook',
-    description: 'Read all cells from a notebook. Use format="brief" for overview, "detailed" for full content (default). Outputs are included and truncated by default (100 lines for regular output, 200 lines for errors). Use include_outputs=false to exclude outputs entirely.',
+    description: 'Read all cells from a notebook. Formats: "brief" (one-line previews), "content" (full code, no outputs), "detailed" (full code + outputs, default). Outputs are truncated (100 lines regular, 200 lines errors).',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the notebook file (.ipynb)' },
-        include_outputs: { type: 'boolean', description: 'Include cell outputs (default: true). Outputs are automatically truncated.' },
-        format: { type: 'string', enum: ['brief', 'detailed'], description: 'Output format (default: detailed)' },
+        format: { type: 'string', enum: ['brief', 'content', 'detailed'], description: 'Output format: brief (previews), content (full code), detailed (code + outputs, default)' },
+        include_outputs: { type: 'boolean', description: 'Override output inclusion (default: true for detailed, false for others)' },
         max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
         max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
         max_lines_error: { type: 'number', description: 'Max lines per error output (default: 200)' },
@@ -86,8 +86,9 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   },
 
   async execute(params, client) {
-    const includeOutputs = params.include_outputs ?? true;
     const format = params.format ?? 'detailed';
+    // Default include_outputs based on format, but allow override
+    const includeOutputs = params.include_outputs ?? (format === 'detailed');
 
     const result = await client.readNotebookViaRouter(params.path, {
       includeOutputs,
@@ -127,7 +128,7 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
       return [{ type: 'text', text: lines.join('\n') }];
     }
 
-    // Detailed format: show full content and outputs
+    // Content and Detailed formats: show full cell content
     const content: MCPContent = [];
     content.push({ type: 'text', text: `Notebook: ${path} (${totalCells} cells)\n` });
 
