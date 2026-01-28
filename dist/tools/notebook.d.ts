@@ -20,6 +20,10 @@ export interface ReadNotebookResult {
     totalCells: number;
     /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
     backend?: 'ui' | 'headless';
+    /** Format used for display */
+    format?: 'brief' | 'detailed';
+    /** Whether outputs are included */
+    includeOutputs?: boolean;
 }
 export declare const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult>;
 export interface ReadCellParams {

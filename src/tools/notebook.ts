@@ -59,18 +59,22 @@ export interface ReadNotebookResult {
   totalCells: number;
   /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
   backend?: 'ui' | 'headless';
+  /** Format used for display */
+  format?: 'brief' | 'detailed';
+  /** Whether outputs are included */
+  includeOutputs?: boolean;
 }
 
 export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   definition: {
     name: 'read_notebook',
-    description: 'Read all cells from a notebook. Use format="brief" for overview, "detailed" for full content. Outputs are included and truncated by default (100 lines for regular output, 200 lines for errors). Use include_outputs=false to exclude outputs entirely.',
+    description: 'Read all cells from a notebook. Use format="brief" for overview, "detailed" for full content (default). Outputs are included and truncated by default (100 lines for regular output, 200 lines for errors). Use include_outputs=false to exclude outputs entirely.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the notebook file (.ipynb)' },
         include_outputs: { type: 'boolean', description: 'Include cell outputs (default: true). Outputs are automatically truncated.' },
-        format: { type: 'string', enum: ['brief', 'detailed'], description: 'Output format (default: brief)' },
+        format: { type: 'string', enum: ['brief', 'detailed'], description: 'Output format (default: detailed)' },
         max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
         max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
         max_lines_error: { type: 'number', description: 'Max lines per error output (default: 200)' },
@@ -82,8 +86,11 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   },
 
   async execute(params, client) {
+    const includeOutputs = params.include_outputs ?? true;
+    const format = params.format ?? 'detailed';
+
     const result = await client.readNotebookViaRouter(params.path, {
-      includeOutputs: params.include_outputs ?? true,  // Default to true
+      includeOutputs,
       maxLines: params.max_lines,
       maxChars: params.max_chars,
       maxLinesError: params.max_lines_error,
@@ -101,18 +108,47 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
         cells: notebook.cells,
         totalCells: notebook.cells.length,
         backend: notebook.backend,
+        format,
+        includeOutputs,
       },
     };
   },
 
-  formatForMCP(result) {
+  async formatForMCP(result) {
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
-    const { path, cells, totalCells } = result.data!;
-    const lines = [`Notebook: ${path} (${totalCells} cells)\n`];
-    cells.forEach((cell, i) => lines.push(formatCellPreview(cell, i)));
-    return [{ type: 'text', text: lines.join('\n') }];
+    const { path, cells, totalCells, format, includeOutputs } = result.data!;
+
+    // Brief format: just show previews
+    if (format === 'brief') {
+      const lines = [`Notebook: ${path} (${totalCells} cells)\n`];
+      cells.forEach((cell, i) => lines.push(formatCellPreview(cell, i)));
+      return [{ type: 'text', text: lines.join('\n') }];
+    }
+
+    // Detailed format: show full content and outputs
+    const content: MCPContent = [];
+    content.push({ type: 'text', text: `Notebook: ${path} (${totalCells} cells)\n` });
+
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      const typeTag = cell.type === 'code' ? '[code]' : '[markdown]';
+      const execCount = cell.executionCount ? ` In[${cell.executionCount}]` : '';
+
+      // Cell header and content
+      const cellText = `\n${'─'.repeat(60)}\nCell ${i} ${typeTag} id="${cell.id}"${execCount}\n${'─'.repeat(60)}\n${cell.content}`;
+      content.push({ type: 'text', text: cellText });
+
+      // Outputs (if included and present)
+      if (includeOutputs && cell.outputs && cell.outputs.length > 0) {
+        content.push({ type: 'text', text: `\n--- Output ---` });
+        const outputContent = await formatOutputs(cell.outputs);
+        content.push(...outputContent);
+      }
+    }
+
+    return content;
   },
 };
 
