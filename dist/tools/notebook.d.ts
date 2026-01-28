@@ -99,13 +99,19 @@ export interface DeleteCellParams {
     cell_id?: string;
 }
 export declare const deleteCellTool: Tool<DeleteCellParams, void>;
-export interface ClearNotebookParams {
+export interface CreateNotebookParams {
     path: string;
+    overwrite?: boolean;
+    kernel_name?: string;
+    kernel_display_name?: string;
 }
-export interface ClearNotebookResult {
-    deletedCount: number;
+export interface CreateNotebookResult {
+    path: string;
+    mtime?: number;
+    popupBlocked?: boolean;
+    popupMessage?: string;
 }
-export declare const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult>;
+export declare const createNotebookTool: Tool<CreateNotebookParams, CreateNotebookResult>;
 export interface MoveCellParams {
     path: string;
     from_index?: number;
@@ -224,5 +230,5 @@ export interface ClearOutputsResult {
     notFound?: string[];
 }
 export declare const clearOutputsTool: Tool<ClearOutputsParams, ClearOutputsResult>;
-export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<ClearNotebookParams, ClearNotebookResult> | Tool<MoveCellParams, MoveCellResult> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult> | Tool<ConnectServerParams, ConnectServerResult> | Tool<StartAgentSessionParams, StartAgentSessionResult> | Tool<EndAgentSessionParams, EndAgentSessionResult> | Tool<DeleteCellsParams, DeleteCellsResult> | Tool<InsertCellsParams, InsertCellsResult> | Tool<ClearOutputsParams, ClearOutputsResult>)[];
+export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<CreateNotebookParams, CreateNotebookResult> | Tool<MoveCellParams, MoveCellResult> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult> | Tool<ConnectServerParams, ConnectServerResult> | Tool<StartAgentSessionParams, StartAgentSessionResult> | Tool<EndAgentSessionParams, EndAgentSessionResult> | Tool<DeleteCellsParams, DeleteCellsResult> | Tool<InsertCellsParams, InsertCellsResult> | Tool<ClearOutputsParams, ClearOutputsResult>)[];
 //# sourceMappingURL=notebook.d.ts.map

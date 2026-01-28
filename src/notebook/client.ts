@@ -1175,7 +1175,7 @@ export class NebulaClient {
       kernelName?: string;
       kernelDisplayName?: string;
     } = {}
-  ): Promise<ToolResult<{ path?: string; mtime?: number }>> {
+  ): Promise<ToolResult<{ path?: string; mtime?: number; popupBlocked?: boolean; popupMessage?: string }>> {
     const { overwrite = false, kernelName = 'python3', kernelDisplayName = 'Python 3' } = options;
 
     return this.applyOperation({

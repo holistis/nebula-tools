@@ -328,6 +328,8 @@ export declare class NebulaClient {
     }): Promise<ToolResult<{
         path?: string;
         mtime?: number;
+        popupBlocked?: boolean;
+        popupMessage?: string;
     }>>;
     /**
      * Insert a cell using the operation router

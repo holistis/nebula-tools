@@ -65,7 +65,7 @@ allTools, toolsByName, toolCategories, notebookTools, kernelTools, executionTool
 // Tool utilities
 getToolDefinitions, executeToolByName, executeToolForMCP, getTool, hasTool, getToolNamesByCategory, 
 // Individual notebook tools
-readNotebookTool, readCellTool, readOutputTool, insertCellTool, updateCellTool, deleteCellTool, clearNotebookTool, moveCellTool, duplicateCellTool, searchCellsTool, updateMetadataTool, 
+readNotebookTool, readCellTool, readOutputTool, insertCellTool, updateCellTool, deleteCellTool, createNotebookTool, moveCellTool, duplicateCellTool, searchCellsTool, updateMetadataTool, 
 // Individual kernel tools
 listKernelsTool, kernelStartTool, kernelStopTool, kernelRestartTool, kernelInterruptTool, 
 // Individual execution tools

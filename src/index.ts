@@ -118,7 +118,7 @@ export {
   insertCellTool,
   updateCellTool,
   deleteCellTool,
-  clearNotebookTool,
+  createNotebookTool,
   moveCellTool,
   duplicateCellTool,
   searchCellsTool,

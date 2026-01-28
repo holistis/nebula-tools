@@ -608,25 +608,34 @@ export const deleteCellTool: Tool<DeleteCellParams, void> = {
 };
 
 // =============================================================================
-// clear_notebook
+// create_notebook
 // =============================================================================
 
-export interface ClearNotebookParams {
+export interface CreateNotebookParams {
   path: string;
+  overwrite?: boolean;
+  kernel_name?: string;
+  kernel_display_name?: string;
 }
 
-export interface ClearNotebookResult {
-  deletedCount: number;
+export interface CreateNotebookResult {
+  path: string;
+  mtime?: number;
+  popupBlocked?: boolean;
+  popupMessage?: string;
 }
 
-export const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult> = {
+export const createNotebookTool: Tool<CreateNotebookParams, CreateNotebookResult> = {
   definition: {
-    name: 'clear_notebook',
-    description: 'Delete all cells from a notebook. Useful for starting fresh without creating a new file.',
+    name: 'create_notebook',
+    description: 'Create a new empty notebook. If the notebook is open in the browser UI, it will attempt to open the new notebook in a new tab.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Path to the notebook file' },
+        path: { type: 'string', description: 'Path for the new notebook file (.ipynb)' },
+        overwrite: { type: 'boolean', description: 'Allow overwriting existing file (default: false)' },
+        kernel_name: { type: 'string', description: 'Kernel name (default: python3)' },
+        kernel_display_name: { type: 'string', description: 'Display name for kernel (default: Python 3)' },
       },
       required: ['path'],
     },
@@ -634,8 +643,11 @@ export const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult> =
   },
 
   async execute(params, client) {
-    // Use single clearNotebook operation instead of N+1 loop (Phase 1 optimization)
-    const result = await client.clearNotebookOp(params.path);
+    const result = await client.createNotebookOp(params.path, {
+      overwrite: params.overwrite,
+      kernelName: params.kernel_name,
+      kernelDisplayName: params.kernel_display_name,
+    });
 
     if (!result.success) {
       return { success: false, error: result.error };
@@ -644,8 +656,11 @@ export const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult> =
     return {
       success: true,
       data: {
-        deletedCount: result.data!.deletedCount
-      }
+        path: result.data?.path ?? params.path,
+        mtime: result.data?.mtime,
+        popupBlocked: result.data?.popupBlocked,
+        popupMessage: result.data?.popupMessage,
+      },
     };
   },
 
@@ -653,11 +668,12 @@ export const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult> =
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
-    const { deletedCount } = result.data!;
-    if (deletedCount === 0) {
-      return [{ type: 'text', text: 'Notebook was already empty' }];
+    const { path, popupBlocked, popupMessage } = result.data!;
+    let msg = `Created notebook: ${path}`;
+    if (popupBlocked && popupMessage) {
+      msg += `\n⚠️ ${popupMessage}`;
     }
-    return [{ type: 'text', text: `Cleared notebook: deleted ${deletedCount} cells` }];
+    return [{ type: 'text', text: msg }];
   },
 };
 
@@ -1321,7 +1337,7 @@ export const notebookTools = [
   insertCellTool,
   updateCellTool,
   deleteCellTool,
-  clearNotebookTool,
+  createNotebookTool,
   moveCellTool,
   duplicateCellTool,
   searchCellsTool,
