@@ -380,6 +380,10 @@ export interface OperationResult {
   path?: string;
   /** File modification time (for createNotebook) */
   mtime?: number;
+  /** Whether browser popup was blocked (for createNotebook via UI) */
+  popupBlocked?: boolean;
+  /** Message about popup blocking (for createNotebook via UI) */
+  popupMessage?: string;
   /** Cell data (for readCell operation) */
   cell?: NotebookCell;
   /** Cell outputs (for readCellOutput operation) - may include truncation metadata */
