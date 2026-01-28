@@ -37,7 +37,7 @@ describe('MCP Server', () => {
     // Start the MCP server process
     serverProcess = spawn('node', ['dist/mcp/index.js'], {
       cwd: process.cwd().replace('/src/__tests__', ''),
-      env: { ...process.env, NEBULA_URL: 'http://localhost:8000' },
+      env: { ...process.env, NEBULA_URL: process.env.NEBULA_URL || 'http://localhost:3000' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -92,7 +92,7 @@ describe('MCP Server', () => {
       expect(result).toBeDefined();
       expect(result.tools).toBeDefined();
       expect(Array.isArray(result.tools)).toBe(true);
-      expect(result.tools.length).toBe(20); // 14 notebook + 5 kernel + 1 execution
+      expect(result.tools.length).toBe(30); // 14 notebook + 5 kernel + 1 execution + 1 connect + 2 batch + 7 file
     });
 
     it('should have correct tool definitions', async () => {

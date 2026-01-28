@@ -572,26 +572,32 @@ describe('read_output adaptive polling', () => {
   });
 
   it('should poll quickly for fast executions', async () => {
-    // Mock: First poll returns empty, second poll returns output
+    // Mock: First poll returns busy/empty, second poll returns complete with output
     // Should complete in ~50-100ms (one interval)
+    const busyResponse = {
+      success: true,
+      data: {
+        cellId: 'cell-1',
+        cellIndex: 0,
+        outputs: [],
+        executionStatus: 'busy' // Cell is still executing
+      }
+    };
+    const completeResponse = {
+      success: true,
+      data: {
+        cellId: 'cell-1',
+        cellIndex: 0,
+        outputs: [{ output_type: 'stream', name: 'stdout', text: 'done' }],
+        executionStatus: 'idle' // Execution complete
+      }
+    };
+
     mockClient = {
       readCellOutputOp: vi.fn()
-        .mockResolvedValueOnce({
-          success: true,
-          data: {
-            cellId: 'cell-1',
-            cellIndex: 0,
-            outputs: []
-          }
-        })
-        .mockResolvedValueOnce({
-          success: true,
-          data: {
-            cellId: 'cell-1',
-            cellIndex: 0,
-            outputs: [{ output_type: 'stream', name: 'stdout', text: 'done' }]
-          }
-        })
+        .mockResolvedValueOnce(busyResponse)
+        .mockResolvedValueOnce(completeResponse)
+        .mockResolvedValue(completeResponse) // Default for any extra calls
     } as Partial<NebulaClient>;
 
     const start = Date.now();
@@ -610,32 +616,34 @@ describe('read_output adaptive polling', () => {
   });
 
   it('should use exponential backoff for long executions', { timeout: 10000 }, async () => {
-    // Mock: Multiple empty polls, then success
+    // Mock: Multiple busy polls, then complete
     // Should use intervals: 50, 100, 200, 400, 800ms...
-    const emptyResponse = {
+    const busyResponse = {
       success: true,
       data: {
         cellId: 'cell-1',
         cellIndex: 0,
-        outputs: []
+        outputs: [],
+        executionStatus: 'busy' // Still executing
       }
     };
 
-    const successResponse = {
+    const completeResponse = {
       success: true,
       data: {
         cellId: 'cell-1',
         cellIndex: 0,
-        outputs: [{ output_type: 'execute_result', data: { 'text/plain': '42' } }]
+        outputs: [{ output_type: 'execute_result', data: { 'text/plain': '42' } }],
+        executionStatus: 'idle' // Execution complete
       }
     };
 
-    // Return empty 9 times, then success on 10th call
+    // Return busy 9 times, then complete on 10th+ calls
     const mockFn = vi.fn();
     for (let i = 0; i < 9; i++) {
-      mockFn.mockResolvedValueOnce(emptyResponse);
+      mockFn.mockResolvedValueOnce(busyResponse);
     }
-    mockFn.mockResolvedValueOnce(successResponse);
+    mockFn.mockResolvedValue(completeResponse); // Default for 10th+ calls
 
     mockClient = { readCellOutputOp: mockFn } as Partial<NebulaClient>;
 
@@ -660,18 +668,19 @@ describe('read_output adaptive polling', () => {
   });
 
   it('should timeout and return current outputs after max_wait', async () => {
-    // Mock: Always return empty outputs
-    const emptyResponse = {
+    // Mock: Always return busy with no outputs (simulates long-running execution)
+    const busyResponse = {
       success: true,
       data: {
         cellId: 'cell-1',
         cellIndex: 0,
-        outputs: []
+        outputs: [],
+        executionStatus: 'busy' // Never completes
       }
     };
 
     mockClient = {
-      readCellOutputOp: vi.fn().mockResolvedValue(emptyResponse)
+      readCellOutputOp: vi.fn().mockResolvedValue(busyResponse)
     } as Partial<NebulaClient>;
 
     const start = Date.now();

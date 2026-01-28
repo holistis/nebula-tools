@@ -6,49 +6,47 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { NebulaClient } from '../notebook/client.js';
-import * as fs from 'fs';
 import * as path from 'path';
 
 describe('Cell ID Tracking (operation router)', () => {
   let client: NebulaClient;
   let testNotebookPath: string;
 
-  beforeEach(() => {
-    client = new NebulaClient({ baseUrl: 'http://localhost:8000' });
+  beforeEach(async () => {
+    client = new NebulaClient({
+      baseUrl: process.env.NEBULA_URL || 'http://localhost:3000',
+      agentId: 'cell-id-test-agent',
+      autoStartAgentSession: true,
+    });
     testNotebookPath = path.join(
       '/tmp',
       `nebula-test-${Date.now()}-${Math.random().toString(16).slice(2)}.ipynb`
     );
 
-    const notebook = {
-      nbformat: 4,
-      nbformat_minor: 5,
-      metadata: { kernelspec: { name: 'python3' } },
-      cells: [
-        {
-          id: 'existing-cell-1',
-          cell_type: 'code',
-          source: 'print("Cell 1")',
-          metadata: {},
-          outputs: [],
-          execution_count: null,
-        },
-        {
-          id: 'existing-cell-2',
-          cell_type: 'code',
-          source: 'print("Cell 2")',
-          metadata: {},
-          outputs: [],
-          execution_count: null,
-        },
-      ],
-    };
-    fs.writeFileSync(testNotebookPath, JSON.stringify(notebook, null, 2));
+    // Create notebook via operation router (sets agent_created: true)
+    const createResult = await client.createNotebookOp(testNotebookPath, { overwrite: true });
+    if (!createResult.success) {
+      throw new Error(`Failed to create notebook: ${createResult.error}`);
+    }
+
+    // Insert the initial cells
+    await client.insertCellOp(testNotebookPath, -1, {
+      id: 'existing-cell-1',
+      type: 'code',
+      content: 'print("Cell 1")',
+    });
+    await client.insertCellOp(testNotebookPath, -1, {
+      id: 'existing-cell-2',
+      type: 'code',
+      content: 'print("Cell 2")',
+    });
   });
 
-  afterEach(() => {
-    if (fs.existsSync(testNotebookPath)) {
-      fs.unlinkSync(testNotebookPath);
+  afterEach(async () => {
+    try {
+      await client.deleteFile(testNotebookPath);
+    } catch {
+      // Ignore cleanup errors
     }
   });
 

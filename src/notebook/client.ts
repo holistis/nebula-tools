@@ -1049,7 +1049,8 @@ export class NebulaClient {
   private isWriteOperation(opType: string): boolean {
     const readOnlyOps = new Set(['readCell', 'readCellOutput', 'searchCells', 'readNotebook']);
     const sessionOps = new Set(['startAgentSession', 'endAgentSession']);
-    return !readOnlyOps.has(opType) && !sessionOps.has(opType);
+    const creationOps = new Set(['createNotebook']); // File doesn't exist yet, no session needed
+    return !readOnlyOps.has(opType) && !sessionOps.has(opType) && !creationOps.has(opType);
   }
 
   private async ensureAgentSession(path: string): Promise<ToolResult<{ warning?: string }>> {
