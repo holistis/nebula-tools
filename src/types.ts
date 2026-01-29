@@ -247,6 +247,8 @@ export interface StartAgentSessionOp {
   type: 'startAgentSession';
   notebookPath: string;
   agentId?: string;
+  /** Force steal the lock even if another session is active. Use with user permission only. */
+  force?: boolean;
 }
 
 /**
@@ -264,6 +266,8 @@ export interface AgentContextFields {
   agentId?: string;
   clientName?: string;
   clientVersion?: string;
+  /** Force steal the lock even if another session is active */
+  force?: boolean;
 }
 
 // =============================================================================
@@ -334,6 +338,29 @@ export interface ExecuteCellOp {
 }
 
 /**
+ * Get user changes since a timestamp
+ *
+ * Used by agents to detect what the user changed between tool calls.
+ * Returns summaries of user operations (not AI operations).
+ */
+export interface GetUserChangesOp {
+  type: 'getUserChanges';
+  notebookPath: string;
+  sinceTimestamp: number;
+}
+
+/**
+ * Summary of a user change
+ */
+export interface UserChangeSummary {
+  type: string;
+  cellId?: string;
+  cellIndex?: number;
+  timestamp: number;
+  description: string;
+}
+
+/**
  * Union of all notebook operations
  */
 export type NotebookOperation = (
@@ -357,6 +384,8 @@ export type NotebookOperation = (
   | ClearOutputsOp
   // Execution
   | ExecuteCellOp
+  // User change tracking
+  | GetUserChangesOp
 ) & AgentContextFields;
 
 /**
@@ -445,6 +474,11 @@ export interface OperationResult {
   executionStatus?: 'idle' | 'busy' | 'error';
   executionTime?: number;
   sessionId?: string;
+
+  /** User changes since a timestamp (for getUserChanges operation) */
+  userChanges?: UserChangeSummary[];
+  /** Server timestamp for tracking changes (returned with every operation) */
+  serverTimestamp?: number;
 
   /** Extensible metadata container (Phase 2 ready) */
   metadata?: {

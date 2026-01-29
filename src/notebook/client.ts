@@ -147,6 +147,8 @@ export class NebulaClient {
   private activeAgentSessions: Set<string> = new Set();
   private agentSessionInFlight: Map<string, Promise<ToolResult<{ warning?: string }>>> = new Map();
   private lastBackend?: 'ui' | 'headless';
+  // Track last tool call timestamp per notebook path for user change detection
+  private lastToolCallTimestamp: Map<string, number> = new Map();
 
   constructor(config: NebulaClientConfig = {}) {
     this.baseUrl = config.baseUrl || 'http://localhost:8000';
@@ -1835,8 +1837,13 @@ export class NebulaClient {
   /**
    * Start an agent session (locks notebook for agent use).
    * If a session is already active, returns a warning but still starts a new session.
+   *
+   * @param path - Path to the notebook file
+   * @param agentId - Optional identifier for this agent session
+   * @param force - If true, forcibly end any existing session and steal the lock.
+   *                Use only with explicit user permission.
    */
-  async startAgentSession(path: string, agentId?: string): Promise<ToolResult<{
+  async startAgentSession(path: string, agentId?: string, force?: boolean): Promise<ToolResult<{
     warning?: string;
     previousSessionDuration?: number;
   }>> {
@@ -1846,6 +1853,7 @@ export class NebulaClient {
       agentId: agentId || this.agentId,
       clientName: this.clientName,
       clientVersion: this.clientVersion,
+      force,
     };
 
     const result = await this.applyOperation(operation);
@@ -1990,6 +1998,76 @@ export class NebulaClient {
       const message = error instanceof Error ? error.message : String(error);
       return { success: false, error: message };
     }
+  }
+
+  // ===========================================================================
+  // User Change Tracking
+  // ===========================================================================
+
+  /**
+   * Get the last tool call timestamp for a notebook path.
+   * Used internally to track user changes between tool calls.
+   */
+  getLastToolCallTimestamp(path: string): number {
+    return this.lastToolCallTimestamp.get(path) ?? 0;
+  }
+
+  /**
+   * Record the current time as the last tool call for a notebook path.
+   * Called automatically after each operation.
+   */
+  recordToolCallTimestamp(path: string, timestamp?: number): void {
+    this.lastToolCallTimestamp.set(path, timestamp ?? Date.now());
+  }
+
+  /**
+   * Get user changes since the last tool call for a notebook.
+   *
+   * Returns summaries of operations made by the user (not AI) since
+   * the last recorded tool call timestamp.
+   */
+  async getUserChangesOp(path: string): Promise<ToolResult<{
+    changes: Array<{
+      type: string;
+      cellId?: string;
+      cellIndex?: number;
+      timestamp: number;
+      description: string;
+    }>;
+    sinceTimestamp: number;
+    serverTimestamp: number;
+  }>> {
+    const sinceTimestamp = this.getLastToolCallTimestamp(path);
+
+    const operation: import('../types.js').GetUserChangesOp = {
+      type: 'getUserChanges',
+      notebookPath: path,
+      sinceTimestamp,
+    };
+
+    const result = await this.applyOperation(operation);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+
+    const opResult = result.data!;
+    if (!opResult.success) {
+      return { success: false, error: opResult.error };
+    }
+
+    // Update the timestamp with server's timestamp if provided
+    if (opResult.serverTimestamp) {
+      this.recordToolCallTimestamp(path, opResult.serverTimestamp);
+    }
+
+    return {
+      success: true,
+      data: {
+        changes: opResult.userChanges ?? [],
+        sinceTimestamp,
+        serverTimestamp: opResult.serverTimestamp ?? Date.now(),
+      },
+    };
   }
 }
 

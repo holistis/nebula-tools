@@ -79,8 +79,20 @@ export async function executeToolByName(
   }
 }
 
+// Tools that operate on notebooks and should track user changes
+const NOTEBOOK_TOOLS = new Set([
+  'read_notebook', 'read_cell', 'read_output',
+  'insert_cell', 'update_cell', 'delete_cell', 'delete_cells',
+  'move_cell', 'duplicate_cell', 'insert_cells',
+  'create_notebook', 'search_cells', 'update_metadata',
+  'clear_outputs', 'execute_cell',
+  'start_agent_session', 'end_agent_session',
+]);
+
 /**
  * Execute a tool and format result for MCP display
+ *
+ * Automatically includes user changes since the last tool call for notebook operations.
  *
  * @param name - Tool name
  * @param params - Tool parameters
@@ -100,40 +112,73 @@ export async function executeToolForMCP(
     };
   }
 
+  // Extract notebook path for user change tracking
+  const notebookPath = (params.path as string) || undefined;
+  const isNotebookTool = NOTEBOOK_TOOLS.has(name) && notebookPath;
+
+  // Query user changes BEFORE executing the tool (to capture what happened since last call)
+  let userChanges: Array<{ type: string; cellId?: string; cellIndex?: number; timestamp: number; description: string }> = [];
+  if (isNotebookTool) {
+    try {
+      const changesResult = await client.getUserChangesOp(notebookPath);
+      if (changesResult.success && changesResult.data?.changes.length) {
+        userChanges = changesResult.data.changes;
+      }
+    } catch (e) {
+      // Silently ignore errors in user change tracking
+      console.error('[executeToolForMCP] Error getting user changes:', e);
+    }
+  }
+
   try {
     // Clear any stale backend info before executing the tool
     client.consumeLastBackend();
     const result = await tool.execute(params, client);
     const backend = client.consumeLastBackend();
 
+    // Record the tool call timestamp for future change tracking
+    if (isNotebookTool) {
+      client.recordToolCallTimestamp(notebookPath);
+    }
+
+    // Build content array
+    let content: MCPContent;
+
     // Use custom formatter if available, otherwise default JSON
     if (tool.formatForMCP) {
-      const content = await tool.formatForMCP(result);
-      if (backend) {
-        content.push({ type: 'text', text: `Backend: ${backend}` });
-      }
-      return {
-        content,
-        isError: !result.success,
-      };
+      content = await tool.formatForMCP(result);
+    } else if (!result.success) {
+      content = [{ type: 'text', text: `Error: ${result.error}` }];
+    } else {
+      content = [{ type: 'text', text: JSON.stringify(result.data, null, 2) }];
     }
 
-    // Default formatting
-    if (!result.success) {
-      const content: MCPContent = [{ type: 'text', text: `Error: ${result.error}` }];
-      if (backend) {
-        content.push({ type: 'text', text: `Backend: ${backend}` });
-      }
-      return { content, isError: true };
-    }
-
-    const content: MCPContent = [{ type: 'text', text: JSON.stringify(result.data, null, 2) }];
+    // Add backend info
     if (backend) {
       content.push({ type: 'text', text: `Backend: ${backend}` });
     }
-    return { content };
+
+    // Add user changes if any (silent if none)
+    if (userChanges.length > 0) {
+      const changesSummary = userChanges.map(c =>
+        `  • ${c.description} (${new Date(c.timestamp).toLocaleTimeString()})`
+      ).join('\n');
+      content.push({
+        type: 'text',
+        text: `\n📝 User changes since last tool call:\n${changesSummary}`,
+      });
+    }
+
+    return {
+      content,
+      isError: !result.success,
+    };
   } catch (error) {
     client.consumeLastBackend();
+    // Still record timestamp even on error
+    if (isNotebookTool) {
+      client.recordToolCallTimestamp(notebookPath);
+    }
     const message = error instanceof Error ? error.message : String(error);
     return {
       content: [{ type: 'text', text: `Tool execution failed: ${message}` }],

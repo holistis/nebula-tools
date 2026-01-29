@@ -19,7 +19,8 @@ function formatCellPreview(cell: NotebookCell, index: number): string {
   const execCount = cell.executionCount ? ` [${cell.executionCount}]` : '';
   const firstLine = cell.content.split('\n')[0].substring(0, 60);
   const moreLines = cell.content.split('\n').length > 1 ? '...' : '';
-  return `${index}: ${typeTag} id="${cell.id}"${execCount} ${firstLine}${moreLines}`;
+  // Use #N format (1-indexed) to match UI display
+  return `#${index + 1}: ${typeTag} id="${cell.id}"${execCount} ${firstLine}${moreLines}`;
 }
 
 async function formatOutputs(outputs: CellOutput[]): Promise<MCPContent> {
@@ -137,8 +138,8 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
       const typeTag = cell.type === 'code' ? '[code]' : '[markdown]';
       const execCount = cell.executionCount ? ` In[${cell.executionCount}]` : '';
 
-      // Cell header and content
-      const cellText = `\n${'─'.repeat(60)}\nCell ${i} ${typeTag} id="${cell.id}"${execCount}\n${'─'.repeat(60)}\n${cell.content}`;
+      // Cell header and content (use #N format, 1-indexed, to match UI display)
+      const cellText = `\n${'─'.repeat(60)}\n#${i + 1} ${typeTag} id="${cell.id}"${execCount}\n${'─'.repeat(60)}\n${cell.content}`;
       content.push({ type: 'text', text: cellText });
 
       // Outputs (if included and present)
@@ -206,8 +207,9 @@ export const readCellTool: Tool<ReadCellParams, ReadCellResult> = {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
     const { cell, cellIndex } = result.data!;
-    const execInfo = cell.executionCount ? ` execution #${cell.executionCount}` : '';
-    return [{ type: 'text', text: `Cell ${cellIndex} [${cell.type}] id="${cell.id}"${execInfo}\n---\n${cell.content}` }];
+    const execInfo = cell.executionCount ? ` execution [${cell.executionCount}]` : '';
+    // Use #N format (1-indexed) to match UI display
+    return [{ type: 'text', text: `#${cellIndex + 1} [${cell.type}] id="${cell.id}"${execInfo}\n---\n${cell.content}` }];
   },
 };
 
@@ -407,13 +409,15 @@ export const readOutputTool: Tool<ReadOutputParams, ReadOutputResult> = {
     if (!result.success) {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
-    const { cellId, outputs, totalOutputs, temp_files } = result.data!;
+    const { cellId, cellIndex, outputs, totalOutputs, temp_files } = result.data!;
+    // Use #N format (1-indexed) to match UI display
+    const cellRef = `#${cellIndex + 1} (id="${cellId}")`;
     if (outputs.length === 0) {
-      return [{ type: 'text', text: `Cell ${cellId}: No outputs (total: ${totalOutputs})` }];
+      return [{ type: 'text', text: `${cellRef}: No outputs (total: ${totalOutputs})` }];
     }
 
     const mcpOutputs: MCPContent = [];
-    let headerInfo = `Cell ${cellId}: ${outputs.length} outputs (total: ${totalOutputs})`;
+    let headerInfo = `${cellRef}: ${outputs.length} outputs (total: ${totalOutputs})`;
 
     // Add temp file info if present
     if (temp_files && temp_files.length > 0) {
@@ -512,7 +516,7 @@ export const insertCellTool: Tool<InsertCellParams, InsertCellResult> = {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
     const { cellIndex, cellId, idModified, requestedId } = result.data!;
-    let msg = `Inserted cell at index ${cellIndex}, id="${cellId}"`;
+    let msg = `Inserted cell at #${cellIndex + 1}, id="${cellId}"`;
     if (idModified) {
       msg += ` (requested "${requestedId}" was auto-fixed)`;
     }
@@ -593,7 +597,7 @@ export const updateCellTool: Tool<UpdateCellParams, UpdateCellResult> = {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
     const { cellIndex, cellId } = result.data!;
-    return [{ type: 'text', text: `Updated cell at index ${cellIndex}, id="${cellId}"` }];
+    return [{ type: 'text', text: `Updated cell #${cellIndex + 1}, id="${cellId}"` }];
   },
 };
 
@@ -781,7 +785,7 @@ export const moveCellTool: Tool<MoveCellParams, MoveCellResult> = {
     }
     const { cellId, fromIndex, toIndex } = result.data!;
     const idInfo = cellId ? ` (id="${cellId}")` : '';
-    return [{ type: 'text', text: `Cell moved from index ${fromIndex} to ${toIndex}${idInfo}` }];
+    return [{ type: 'text', text: `Cell moved from #${fromIndex + 1} to #${toIndex + 1}${idInfo}` }];
   },
 };
 
@@ -839,7 +843,7 @@ export const duplicateCellTool: Tool<DuplicateCellParams, DuplicateCellResult> =
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
     const { newCellIndex, totalCells } = result.data!;
-    return [{ type: 'text', text: `Cell duplicated at index ${newCellIndex} (${totalCells} cells total)` }];
+    return [{ type: 'text', text: `Cell duplicated at #${newCellIndex + 1} (${totalCells} cells total)` }];
   },
 };
 
@@ -1066,6 +1070,7 @@ RECOMMENDED WORKFLOW:
 export interface StartAgentSessionParams {
   path: string;
   agent_id?: string;
+  force?: boolean;
 }
 
 export interface StartAgentSessionResult {
@@ -1082,12 +1087,19 @@ This call validates that the notebook path exists; it will error if the path is 
 IMPORTANT: Call this at the START of each response before any notebook operations, and call end_agent_session at the END of each response. This ensures the notebook is only locked while you're actively working on it.
 
 Example flow for each response:
-  start_agent_session → insert_cell/update_cell/execute_cell/etc → end_agent_session`,
+  start_agent_session → insert_cell/update_cell/execute_cell/etc → end_agent_session
+
+FORCE OPTION (use only with explicit user permission):
+If a previous agent session was not properly ended (e.g., due to a crash or timeout), the notebook may remain locked. Use force=true ONLY when the user explicitly asks you to "force" or "steal" the lock. This will forcibly end any existing session and start a new one.`,
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the notebook file' },
         agent_id: { type: 'string', description: 'Optional identifier for this agent session' },
+        force: {
+          type: 'boolean',
+          description: 'DANGEROUS: Force steal the lock even if another session is active. Use ONLY with explicit user permission to avoid disrupting another agent. Default: false',
+        },
       },
       required: ['path'],
     },
@@ -1095,7 +1107,7 @@ Example flow for each response:
   },
 
   async execute(params, client) {
-    const result = await client.startAgentSession(params.path, params.agent_id);
+    const result = await client.startAgentSession(params.path, params.agent_id, params.force);
     if (!result.success) {
       return { success: false, error: result.error };
     }
@@ -1105,7 +1117,12 @@ Example flow for each response:
       console.warn(`[start_agent_session] ${result.data.warning}`);
     }
 
-    return { success: true, data: { warning: result.data?.warning } };
+    return {
+      success: true,
+      data: {
+        warning: result.data?.warning,
+      },
+    };
   },
 
   formatForMCP(result) {
@@ -1114,7 +1131,7 @@ Example flow for each response:
     }
     let msg = 'Agent session started - notebook locked';
     if (result.data?.warning) {
-      msg += `\n⚠️ Warning: ${result.data.warning}`;
+      msg += `\n⚠️ ${result.data.warning}`;
     }
     return [{ type: 'text', text: msg }];
   },
@@ -1219,11 +1236,39 @@ export const deleteCellsTool: Tool<DeleteCellsParams, DeleteCellsResult> = {
       return { success: false, error: 'Must provide at least one cell ID' };
     }
 
-    const result = await client.deleteCellsOp(params.path, params.cell_ids);
-    if (!result.success) {
-      return { success: false, error: result.error };
+    // Implement as a series of delete_cell calls (shorthand at MCP level, no server-side batch needed)
+    const deletedIds: string[] = [];
+    const notFound: string[] = [];
+
+    for (const cellId of params.cell_ids) {
+      const result = await client.deleteCellOp(params.path, { cellId });
+      if (result.success) {
+        deletedIds.push(cellId);
+      } else if (result.error?.includes('not found')) {
+        notFound.push(cellId);
+      } else {
+        // Stop on first real error
+        return {
+          success: false,
+          error: `Failed to delete cell ${cellId}: ${result.error}`,
+          data: { deletedCount: deletedIds.length, deletedIds, notFound, totalCells: -1 },
+        };
+      }
     }
-    return { success: true, data: result.data };
+
+    // Get final cell count
+    const notebook = await client.readNotebookViaRouter(params.path);
+    const totalCells = notebook.success ? notebook.data!.cells.length : -1;
+
+    return {
+      success: true,
+      data: {
+        deletedCount: deletedIds.length,
+        deletedIds,
+        notFound: notFound.length > 0 ? notFound : undefined,
+        totalCells,
+      },
+    };
   },
 
   formatForMCP(result) {
@@ -1231,11 +1276,11 @@ export const deleteCellsTool: Tool<DeleteCellsParams, DeleteCellsResult> = {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
     const { deletedCount, deletedIds, notFound, totalCells } = result.data!;
-    let msg = `Deleted ${deletedCount} cells: ${deletedIds.join(', ')}`;
+    let msg = `Deleted ${deletedCount} cell${deletedCount !== 1 ? 's' : ''}: ${deletedIds.join(', ')}`;
     if (notFound && notFound.length > 0) {
       msg += `\n⚠️ Not found: ${notFound.join(', ')}`;
     }
-    msg += ` (${totalCells} cells remaining)`;
+    msg += ` (${totalCells} cell${totalCells !== 1 ? 's' : ''} remaining)`;
     return [{ type: 'text', text: msg }];
   },
 };
@@ -1286,11 +1331,53 @@ export const insertCellsTool: Tool<InsertCellsParams, InsertCellsResult> = {
       return { success: false, error: 'Must provide at least one cell' };
     }
 
-    const result = await client.insertCellsOp(params.path, params.cells, params.position ?? -1);
-    if (!result.success) {
-      return { success: false, error: result.error };
+    // Implement as a series of insert_cell calls (shorthand at MCP level, no server-side batch needed)
+    const insertedIds: string[] = [];
+    let startIndex = params.position ?? -1;
+
+    // If appending (-1), get current cell count to determine start index
+    if (startIndex === -1) {
+      const notebook = await client.readNotebookViaRouter(params.path);
+      if (!notebook.success) {
+        return { success: false, error: `Failed to read notebook: ${notebook.error}` };
+      }
+      startIndex = notebook.data!.cells.length;
     }
-    return { success: true, data: result.data };
+
+    // Insert cells in order at consecutive positions
+    for (let i = 0; i < params.cells.length; i++) {
+      const cellData = params.cells[i];
+      const cellId = cellData.id || `cell-${Date.now()}-${i}`;
+      const cell = {
+        id: cellId,
+        type: (cellData.type || 'code') as 'code' | 'markdown',
+        content: cellData.content,
+      };
+
+      const result = await client.insertCellOp(params.path, startIndex + i, cell);
+      if (!result.success) {
+        return {
+          success: false,
+          error: `Failed to insert cell ${i + 1}: ${result.error}`,
+          data: { insertedCount: insertedIds.length, insertedIds, startIndex, totalCells: -1 },
+        };
+      }
+      insertedIds.push(result.data!.cellId);
+    }
+
+    // Get final cell count
+    const notebook = await client.readNotebookViaRouter(params.path);
+    const totalCells = notebook.success ? notebook.data!.cells.length : -1;
+
+    return {
+      success: true,
+      data: {
+        insertedCount: insertedIds.length,
+        insertedIds,
+        startIndex,
+        totalCells,
+      },
+    };
   },
 
   formatForMCP(result) {
@@ -1298,7 +1385,7 @@ export const insertCellsTool: Tool<InsertCellsParams, InsertCellsResult> = {
       return [{ type: 'text', text: `Error: ${result.error}` }];
     }
     const { insertedCount, insertedIds, startIndex, totalCells } = result.data!;
-    return [{ type: 'text', text: `Inserted ${insertedCount} cells at index ${startIndex}: ${insertedIds.join(', ')} (${totalCells} cells total)` }];
+    return [{ type: 'text', text: `Inserted ${insertedCount} cell${insertedCount !== 1 ? 's' : ''} at #${startIndex + 1}: ${insertedIds.join(', ')} (${totalCells} cell${totalCells !== 1 ? 's' : ''} total)` }];
   },
 };
 
@@ -1337,11 +1424,51 @@ export const clearOutputsTool: Tool<ClearOutputsParams, ClearOutputsResult> = {
   },
 
   async execute(params, client) {
-    const result = await client.clearOutputsOp(params.path, params.cell_ids);
-    if (!result.success) {
-      return { success: false, error: result.error };
+    // Implement as updateOutputsOp calls with empty outputs (shorthand at MCP level)
+    const notebook = await client.readNotebookViaRouter(params.path);
+    if (!notebook.success) {
+      return { success: false, error: `Failed to read notebook: ${notebook.error}` };
     }
-    return { success: true, data: result.data };
+
+    const cells = notebook.data!.cells;
+    const clearedIds: string[] = [];
+    const notFound: string[] = [];
+
+    // Determine which cells to clear
+    let targetCellIds: string[];
+    if (params.cell_ids && params.cell_ids.length > 0) {
+      targetCellIds = params.cell_ids;
+    } else {
+      // Clear all code cells (markdown cells don't have outputs)
+      targetCellIds = cells.filter(c => c.type === 'code').map(c => c.id);
+    }
+
+    for (const cellId of targetCellIds) {
+      const cell = cells.find(c => c.id === cellId);
+      if (!cell) {
+        notFound.push(cellId);
+        continue;
+      }
+      // Skip if no outputs to clear
+      if (!cell.outputs || cell.outputs.length === 0) {
+        continue;
+      }
+
+      const result = await client.updateOutputsOp(params.path, cellId, []);
+      if (result.success) {
+        clearedIds.push(cellId);
+      }
+      // Silently ignore failures for individual cells
+    }
+
+    return {
+      success: true,
+      data: {
+        clearedCount: clearedIds.length,
+        clearedIds,
+        notFound: notFound.length > 0 ? notFound : undefined,
+      },
+    };
   },
 
   formatForMCP(result) {
