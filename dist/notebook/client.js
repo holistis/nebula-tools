@@ -76,6 +76,8 @@ export class NebulaClient {
     activeAgentSessions = new Set();
     agentSessionInFlight = new Map();
     lastBackend;
+    // Track last tool call timestamp per notebook path for user change detection
+    lastToolCallTimestamp = new Map();
     constructor(config = {}) {
         this.baseUrl = config.baseUrl || 'http://localhost:8000';
         this.timeout = config.timeout || 30000;
@@ -106,6 +108,22 @@ export class NebulaClient {
                 msg.includes('econnrefused') ||
                 msg.includes('econnreset') ||
                 msg.includes('timeout'));
+        }
+        return false;
+    }
+    /**
+     * Check if an error is a connection failure (server not reachable)
+     */
+    isConnectionError(error) {
+        if (error instanceof Error) {
+            const msg = error.message.toLowerCase();
+            return (msg.includes('econnrefused') ||
+                msg.includes('fetch failed') ||
+                msg.includes('network request failed') ||
+                msg.includes('failed to fetch') ||
+                msg.includes('unable to connect') ||
+                msg.includes('enotfound') ||
+                msg.includes('getaddrinfo'));
         }
         return false;
     }
@@ -154,6 +172,11 @@ export class NebulaClient {
                 clearTimeout(timeoutId);
                 if (e instanceof Error && e.name === 'AbortError') {
                     lastError = 'Request timeout';
+                }
+                else if (this.isConnectionError(e)) {
+                    // Provide helpful error for connection failures
+                    lastError = `Cannot connect to Nebula server at ${this.baseUrl}. ` +
+                        `Ensure the server is running or use connect_server to configure the correct URL.`;
                 }
                 else {
                     lastError = `Request failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -1397,14 +1420,20 @@ export class NebulaClient {
     /**
      * Start an agent session (locks notebook for agent use).
      * If a session is already active, returns a warning but still starts a new session.
+     *
+     * @param path - Path to the notebook file
+     * @param agentId - Optional identifier for this agent session
+     * @param force - If true, forcibly end any existing session and steal the lock.
+     *                Use only with explicit user permission.
      */
-    async startAgentSession(path, agentId) {
+    async startAgentSession(path, agentId, force) {
         const operation = {
             type: 'startAgentSession',
             notebookPath: path,
             agentId: agentId || this.agentId,
             clientName: this.clientName,
             clientVersion: this.clientVersion,
+            force,
         };
         const result = await this.applyOperation(operation);
         if (!result.success) {
@@ -1514,6 +1543,57 @@ export class NebulaClient {
             const message = error instanceof Error ? error.message : String(error);
             return { success: false, error: message };
         }
+    }
+    // ===========================================================================
+    // User Change Tracking
+    // ===========================================================================
+    /**
+     * Get the last tool call timestamp for a notebook path.
+     * Used internally to track user changes between tool calls.
+     */
+    getLastToolCallTimestamp(path) {
+        return this.lastToolCallTimestamp.get(path) ?? 0;
+    }
+    /**
+     * Record the current time as the last tool call for a notebook path.
+     * Called automatically after each operation.
+     */
+    recordToolCallTimestamp(path, timestamp) {
+        this.lastToolCallTimestamp.set(path, timestamp ?? Date.now());
+    }
+    /**
+     * Get user changes since the last tool call for a notebook.
+     *
+     * Returns summaries of operations made by the user (not AI) since
+     * the last recorded tool call timestamp.
+     */
+    async getUserChangesOp(path) {
+        const sinceTimestamp = this.getLastToolCallTimestamp(path);
+        const operation = {
+            type: 'getUserChanges',
+            notebookPath: path,
+            sinceTimestamp,
+        };
+        const result = await this.applyOperation(operation);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        const opResult = result.data;
+        if (!opResult.success) {
+            return { success: false, error: opResult.error };
+        }
+        // Update the timestamp with server's timestamp if provided
+        if (opResult.serverTimestamp) {
+            this.recordToolCallTimestamp(path, opResult.serverTimestamp);
+        }
+        return {
+            success: true,
+            data: {
+                changes: opResult.userChanges ?? [],
+                sinceTimestamp,
+                serverTimestamp: opResult.serverTimestamp ?? Date.now(),
+            },
+        };
     }
 }
 /**

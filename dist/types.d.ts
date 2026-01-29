@@ -220,6 +220,8 @@ export interface StartAgentSessionOp {
     type: 'startAgentSession';
     notebookPath: string;
     agentId?: string;
+    /** Force steal the lock even if another session is active. Use with user permission only. */
+    force?: boolean;
 }
 /**
  * End an agent session (unlocks notebook)
@@ -235,6 +237,8 @@ export interface AgentContextFields {
     agentId?: string;
     clientName?: string;
     clientVersion?: string;
+    /** Force steal the lock even if another session is active */
+    force?: boolean;
 }
 /**
  * Delete multiple cells by ID
@@ -295,9 +299,30 @@ export interface ExecuteCellOp {
     saveOutputs?: boolean;
 }
 /**
+ * Get user changes since a timestamp
+ *
+ * Used by agents to detect what the user changed between tool calls.
+ * Returns summaries of user operations (not AI operations).
+ */
+export interface GetUserChangesOp {
+    type: 'getUserChanges';
+    notebookPath: string;
+    sinceTimestamp: number;
+}
+/**
+ * Summary of a user change
+ */
+export interface UserChangeSummary {
+    type: string;
+    cellId?: string;
+    cellIndex?: number;
+    timestamp: number;
+    description: string;
+}
+/**
  * Union of all notebook operations
  */
-export type NotebookOperation = (InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp | StartAgentSessionOp | EndAgentSessionOp | DeleteCellsOp | InsertCellsOp | SearchCellsOp | ClearOutputsOp | ExecuteCellOp) & AgentContextFields;
+export type NotebookOperation = (InsertCellOp | DeleteCellOp | UpdateContentOp | UpdateMetadataOp | MoveCellOp | DuplicateCellOp | UpdateOutputsOp | CreateNotebookOp | ReadCellOp | ReadCellOutputOp | ClearNotebookOp | StartAgentSessionOp | EndAgentSessionOp | DeleteCellsOp | InsertCellsOp | SearchCellsOp | ClearOutputsOp | ExecuteCellOp | GetUserChangesOp) & AgentContextFields;
 /**
  * Result of applying an operation
  */
@@ -385,6 +410,10 @@ export interface OperationResult {
     executionStatus?: 'idle' | 'busy' | 'error';
     executionTime?: number;
     sessionId?: string;
+    /** User changes since a timestamp (for getUserChanges operation) */
+    userChanges?: UserChangeSummary[];
+    /** Server timestamp for tracking changes (returned with every operation) */
+    serverTimestamp?: number;
     /** Extensible metadata container (Phase 2 ready) */
     metadata?: {
         /** Total cells in notebook after operation */

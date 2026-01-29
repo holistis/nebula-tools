@@ -39,6 +39,8 @@ export declare function executeToolByName(name: string, params: Record<string, u
 /**
  * Execute a tool and format result for MCP display
  *
+ * Automatically includes user changes since the last tool call for notebook operations.
+ *
  * @param name - Tool name
  * @param params - Tool parameters
  * @param client - NebulaClient instance

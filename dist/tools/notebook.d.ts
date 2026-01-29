@@ -184,6 +184,7 @@ export declare const connectServerTool: Tool<ConnectServerParams, ConnectServerR
 export interface StartAgentSessionParams {
     path: string;
     agent_id?: string;
+    force?: boolean;
 }
 export interface StartAgentSessionResult {
     warning?: string;

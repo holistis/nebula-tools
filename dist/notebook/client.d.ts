@@ -138,6 +138,7 @@ export declare class NebulaClient {
     private activeAgentSessions;
     private agentSessionInFlight;
     private lastBackend?;
+    private lastToolCallTimestamp;
     constructor(config?: NebulaClientConfig);
     private recordBackend;
     consumeLastBackend(): 'ui' | 'headless' | undefined;
@@ -145,6 +146,10 @@ export declare class NebulaClient {
      * Check if an error is retryable (network/connection errors)
      */
     private isRetryable;
+    /**
+     * Check if an error is a connection failure (server not reachable)
+     */
+    private isConnectionError;
     /**
      * Delay for retry backoff
      */
@@ -539,8 +544,13 @@ export declare class NebulaClient {
     /**
      * Start an agent session (locks notebook for agent use).
      * If a session is already active, returns a warning but still starts a new session.
+     *
+     * @param path - Path to the notebook file
+     * @param agentId - Optional identifier for this agent session
+     * @param force - If true, forcibly end any existing session and steal the lock.
+     *                Use only with explicit user permission.
      */
-    startAgentSession(path: string, agentId?: string): Promise<ToolResult<{
+    startAgentSession(path: string, agentId?: string, force?: boolean): Promise<ToolResult<{
         warning?: string;
         previousSessionDuration?: number;
     }>>;
@@ -578,6 +588,33 @@ export declare class NebulaClient {
         path: string;
         version: string;
         packages?: string[];
+    }>>;
+    /**
+     * Get the last tool call timestamp for a notebook path.
+     * Used internally to track user changes between tool calls.
+     */
+    getLastToolCallTimestamp(path: string): number;
+    /**
+     * Record the current time as the last tool call for a notebook path.
+     * Called automatically after each operation.
+     */
+    recordToolCallTimestamp(path: string, timestamp?: number): void;
+    /**
+     * Get user changes since the last tool call for a notebook.
+     *
+     * Returns summaries of operations made by the user (not AI) since
+     * the last recorded tool call timestamp.
+     */
+    getUserChangesOp(path: string): Promise<ToolResult<{
+        changes: Array<{
+            type: string;
+            cellId?: string;
+            cellIndex?: number;
+            timestamp: number;
+            description: string;
+        }>;
+        sinceTimestamp: number;
+        serverTimestamp: number;
     }>>;
 }
 /**
