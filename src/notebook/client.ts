@@ -190,6 +190,25 @@ export class NebulaClient {
   }
 
   /**
+   * Check if an error is a connection failure (server not reachable)
+   */
+  private isConnectionError(error: unknown): boolean {
+    if (error instanceof Error) {
+      const msg = error.message.toLowerCase();
+      return (
+        msg.includes('econnrefused') ||
+        msg.includes('fetch failed') ||
+        msg.includes('network request failed') ||
+        msg.includes('failed to fetch') ||
+        msg.includes('unable to connect') ||
+        msg.includes('enotfound') ||
+        msg.includes('getaddrinfo')
+      );
+    }
+    return false;
+  }
+
+  /**
    * Delay for retry backoff
    */
   private delay(ms: number): Promise<void> {
@@ -243,6 +262,10 @@ export class NebulaClient {
 
         if (e instanceof Error && e.name === 'AbortError') {
           lastError = 'Request timeout';
+        } else if (this.isConnectionError(e)) {
+          // Provide helpful error for connection failures
+          lastError = `Cannot connect to Nebula server at ${this.baseUrl}. ` +
+            `Ensure the server is running or use connect_server to configure the correct URL.`;
         } else {
           lastError = `Request failed: ${e instanceof Error ? e.message : String(e)}`;
         }
