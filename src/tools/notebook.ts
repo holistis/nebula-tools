@@ -23,13 +23,21 @@ function formatCellPreview(cell: NotebookCell, index: number): string {
   return `#${index + 1}: ${typeTag} id="${cell.id}"${execCount} ${firstLine}${moreLines}`;
 }
 
-async function formatOutputs(outputs: CellOutput[]): Promise<MCPContent> {
+async function formatOutputs(outputs: CellOutput[], usePlaceholders = false): Promise<MCPContent> {
   const results: MCPContent = [];
+  let imageIndex = 0;
   for (const o of outputs) {
     if (o.type === 'image') {
-      // Resize images to fit Claude API limits (2000px max dimension)
-      const resizedData = await resizeImageIfNeeded(o.content);
-      results.push({ type: 'image' as const, data: resizedData, mimeType: 'image/png' });
+      if (usePlaceholders) {
+        // Placeholder mode: show text description instead of base64 image
+        imageIndex++;
+        const sizeKB = Math.round(o.content.length * 0.75 / 1024);
+        results.push({ type: 'text' as const, text: `[IMAGE ${imageIndex}: ~${sizeKB}KB PNG]` });
+      } else {
+        // Inline mode: resize images to fit Claude API limits (2000px max dimension)
+        const resizedData = await resizeImageIfNeeded(o.content);
+        results.push({ type: 'image' as const, data: resizedData, mimeType: 'image/png' });
+      }
     } else {
       const prefix = o.type === 'error' ? '[ERROR] ' : '';
       results.push({ type: 'text' as const, text: prefix + o.content });
@@ -45,7 +53,7 @@ async function formatOutputs(outputs: CellOutput[]): Promise<MCPContent> {
 export interface ReadNotebookParams {
   path: string;
   include_outputs?: boolean;
-  format?: 'brief' | 'content' | 'detailed';
+  format?: 'brief' | 'content' | 'detailed' | 'placeholder';
   // Truncation parameters for outputs (when include_outputs=true)
   max_lines?: number;
   max_chars?: number;
@@ -61,7 +69,7 @@ export interface ReadNotebookResult {
   /** Indicates which backend served this data: 'ui' for live UI state, 'headless' for file-based */
   backend?: 'ui' | 'headless';
   /** Format used for display */
-  format?: 'brief' | 'content' | 'detailed';
+  format?: 'brief' | 'content' | 'detailed' | 'placeholder';
   /** Whether outputs are included */
   includeOutputs?: boolean;
 }
@@ -69,13 +77,13 @@ export interface ReadNotebookResult {
 export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   definition: {
     name: 'read_notebook',
-    description: 'Read all cells from a notebook. Formats: "brief" (one-line previews), "content" (full code, no outputs), "detailed" (full code + outputs, default). Outputs are truncated (100 lines regular, 200 lines errors).',
+    description: 'Read all cells from a notebook. Formats: "brief" (one-line previews), "content" (full code, no outputs), "detailed" (full code + inline images, default), "placeholder" (full code + text placeholders for images). Outputs are truncated (100 lines regular, 200 lines errors).',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the notebook file (.ipynb)' },
-        format: { type: 'string', enum: ['brief', 'content', 'detailed'], description: 'Output format: brief (previews), content (full code), detailed (code + outputs, default)' },
-        include_outputs: { type: 'boolean', description: 'Override output inclusion (default: true for detailed, false for others)' },
+        format: { type: 'string', enum: ['brief', 'content', 'detailed', 'placeholder'], description: 'Output format: brief (previews), content (full code), detailed (code + inline images, default), placeholder (code + image placeholders)' },
+        include_outputs: { type: 'boolean', description: 'Override output inclusion (default: true for detailed/placeholder, false for others)' },
         max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
         max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
         max_lines_error: { type: 'number', description: 'Max lines per error output (default: 200)' },
@@ -89,7 +97,7 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   async execute(params, client) {
     const format = params.format ?? 'detailed';
     // Default include_outputs based on format, but allow override
-    const includeOutputs = params.include_outputs ?? (format === 'detailed');
+    const includeOutputs = params.include_outputs ?? (format === 'detailed' || format === 'placeholder');
 
     const result = await client.readNotebookViaRouter(params.path, {
       includeOutputs,
@@ -145,7 +153,8 @@ export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
       // Outputs (if included and present)
       if (includeOutputs && cell.outputs && cell.outputs.length > 0) {
         content.push({ type: 'text', text: `\n--- Output ---` });
-        const outputContent = await formatOutputs(cell.outputs);
+        const usePlaceholders = format === 'placeholder';
+        const outputContent = await formatOutputs(cell.outputs, usePlaceholders);
         content.push(...outputContent);
       }
     }
