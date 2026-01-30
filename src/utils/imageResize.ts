@@ -33,7 +33,7 @@ export async function resizeImageIfNeeded(
 
     // Check if resize is needed
     if (width <= maxDimension && height <= maxDimension) {
-      return base64Data; // Already within limits
+      return base64Data.trim(); // Already within limits, but trim any whitespace
     }
 
     // Calculate new dimensions maintaining aspect ratio
@@ -50,11 +50,11 @@ export async function resizeImageIfNeeded(
       .png()
       .toBuffer();
 
-    return resizedBuffer.toString('base64');
+    return resizedBuffer.toString('base64').trim();
   } catch (error) {
-    // If resizing fails, return original
+    // If resizing fails, return original (trimmed)
     console.error('[ImageResize] Failed to resize image:', error);
-    return base64Data;
+    return base64Data.trim();
   }
 }
 
