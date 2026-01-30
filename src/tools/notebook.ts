@@ -77,12 +77,12 @@ export interface ReadNotebookResult {
 export const readNotebookTool: Tool<ReadNotebookParams, ReadNotebookResult> = {
   definition: {
     name: 'read_notebook',
-    description: 'Read all cells from a notebook. Formats: "brief" (one-line previews), "content" (full code, no outputs), "detailed" (full code + inline images, default), "placeholder" (full code + text placeholders for images). Outputs are truncated (100 lines regular, 200 lines errors).',
+    description: 'Read all cells from a notebook. Formats: "brief" (one-line previews), "content" (full code, no outputs), "detailed" (full code + inline images, default), "placeholder" (full code + text placeholders for images, recommended for Gemini). Outputs are truncated (100 lines regular, 200 lines errors).',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path to the notebook file (.ipynb)' },
-        format: { type: 'string', enum: ['brief', 'content', 'detailed', 'placeholder'], description: 'Output format: brief (previews), content (full code), detailed (code + inline images, default), placeholder (code + image placeholders)' },
+        format: { type: 'string', enum: ['brief', 'content', 'detailed', 'placeholder'], description: 'Output format: brief (previews), content (full code), detailed (code + inline images, default), placeholder (code + image placeholders, recommended for Gemini)' },
         include_outputs: { type: 'boolean', description: 'Override output inclusion (default: true for detailed/placeholder, false for others)' },
         max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
         max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
