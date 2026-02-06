@@ -40,21 +40,15 @@ Add to your `~/.claude.json`:
   "mcpServers": {
     "nebula-notebook": {
       "command": "node",
-      "args": ["/Users/YOUR_USERNAME/Downloads/nebula-tools/bin/nebula-mcp.js"],
-      "env": {
-        "NEBULA_URL": "http://localhost:3000"
-      }
+      "args": ["/Users/YOUR_USERNAME/Downloads/nebula-tools/bin/nebula-mcp.js"]
     }
   }
 }
 ```
 
 **Important Configuration Notes:**
-- ✅ Environment variable **must** be `NEBULA_URL` (not NEBULA_API_URL)
-- ✅ Set to the URL where your Nebula server is running (frontend or backend)
-- ✅ Default is `http://localhost:3000` if not specified (frontend dev server with proxy)
-- ✅ For SSH-forwarded servers, use `http://localhost:FORWARDED_PORT`
-- ✅ For direct backend access, use `http://localhost:8000` (or your backend port)
+- ✅ This config only registers the MCP server binary
+- ✅ The MCP server starts disconnected; you must call `connect_server(base_url=...)` in each MCP session
 
 ### 4. Restart your AI client
 
@@ -71,9 +65,8 @@ When working with Nebula notebooks, agents should follow this workflow pattern:
 
 ### Session Setup (once per conversation)
 ```
-# Always call connect_server first unless you are 100% sure the default URL is correct.
-# Default is NEBULA_URL or http://localhost:3000.
-connect_server(base_url="http://localhost:4000")  // Required if your UI is at :4000
+# Always call connect_server first.
+connect_server(base_url="http://localhost:4000")  // Example: Nebula UI at :4000
 ```
 
 ### Each Response Pattern
@@ -117,14 +110,15 @@ You can switch between different Nebula instances using the `connect_server` too
 
 ### How it works
 
-1. **Default connection**: On startup, connects to `NEBULA_URL` (or `http://localhost:3000` by default)
-2. **Switch connections**: Use `connect_server` to change the current server
+1. **No default connection**: On startup, the MCP server is disconnected
+2. **Connect explicitly**: Use `connect_server(base_url=...)` to choose the server
 3. **All operations use current connection**: Every tool uses the currently connected server
 
 ### Example: Switching between instances
 
 ```typescript
-// By default, connected to localhost:3000
+// Connect to local server explicitly
+connect_server(base_url="http://localhost:3000")
 start_agent_session(path="/local/notebook.ipynb")
 insert_cell(path="/local/notebook.ipynb", ...)
 
@@ -136,8 +130,8 @@ start_agent_session(path="/remote/notebook.ipynb")
 insert_cell(path="/remote/notebook.ipynb", ...)
 execute_cell(path="/remote/notebook.ipynb", ...)
 
-// Switch back to default
-connect_server()  // No base_url = use default
+// Switch back to local server
+connect_server(base_url="http://localhost:3000")
 
 // Back to local server
 insert_cell(path="/local/notebook.ipynb", ...)
@@ -246,8 +240,8 @@ For example:
 ### MCP server not connecting
 
 Check:
-1. Is Nebula frontend running? `curl http://localhost:3000` (or backend on port 8000)
-2. Is `NEBULA_URL` set correctly in `~/.claude.json`?
+1. Is Nebula running? Try `curl http://localhost:3000/api/health` (frontend dev proxy) or `curl http://localhost:8000/api/health` (backend)
+2. Did you call `connect_server(base_url=...)` before using other tools?
 3. Did you restart Claude Code after config changes?
 4. Check MCP server logs in Claude Code (usually visible in stderr)
 
@@ -260,7 +254,7 @@ Check:
 ### "Request failed: fetch failed" error
 
 - The MCP server can't reach the Nebula backend
-- Verify `NEBULA_URL` points to the correct server
+- Verify you're calling `connect_server(base_url=...)` with the correct server URL
 - Check if the backend is actually running
 - For SSH tunnels, ensure port forwarding is active
 
@@ -282,11 +276,11 @@ See [MCP_DISTRIBUTION.md](./MCP_DISTRIBUTION.md) for instructions on publishing 
 # Build the MCP server
 npm run build
 
-# Test manually via stdio (with default URL)
+# Test manually via stdio
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | node bin/nebula-mcp.js
 
 # Test tool listing (specify custom URL if needed)
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | NEBULA_URL=http://localhost:3000 node bin/nebula-mcp.js
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | node bin/nebula-mcp.js
 ```
 
 ### Adding new tools

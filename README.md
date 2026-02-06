@@ -70,8 +70,6 @@ Found:
 📦 Nebula MCP server will be configured at:
     /Users/username/nebula-tools/bin/nebula-mcp.js
 
-⚙️  Environment: NEBULA_URL=http://localhost:3000
-
 ⚙️  Configure Nebula MCP for:
     [✓] Claude Code (~/.claude.json)
     [✓] Cursor IDE (~/.cursor/mcp.json)
@@ -95,11 +93,7 @@ Continue? (y/N): y
 ✅ Setup complete! Restart your AI tools to use Nebula MCP.
 ```
 
-**Environment Variables**:
-- `NEBULA_URL`: Override default server URL (default: `http://localhost:3000`)
-  ```bash
-  NEBULA_URL=http://localhost:8080 npm run setup-mcp
-  ```
+The MCP server starts disconnected. Always call `connect_server(base_url=...)` before using other tools.
 
 ### Manual Setup
 
@@ -111,7 +105,7 @@ Claude Code uses `~/.claude.json` for MCP server configuration.
 
 ```bash
 # Replace /path/to/nebula-tools with your actual absolute path
-claude mcp add --scope user -e NEBULA_URL=http://localhost:3000 \
+claude mcp add --scope user \
   --transport stdio nebula-notebook -- \
   node /path/to/nebula-tools/bin/nebula-mcp.js
 ```
@@ -125,10 +119,7 @@ Edit `~/.claude.json` and add to the top-level `mcpServers` object:
   "mcpServers": {
     "nebula-notebook": {
       "command": "node",
-      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
-      "env": {
-        "NEBULA_URL": "http://localhost:3000"
-      }
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"]
     }
   }
 }
@@ -147,10 +138,7 @@ Edit `~/.claude.json` and add to the top-level `mcpServers` object:
   "mcpServers": {
     "nebula-notebook": {
       "command": "node",
-      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
-      "env": {
-        "NEBULA_URL": "http://localhost:3000"
-      }
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"]
     }
   }
 }
@@ -169,10 +157,7 @@ Restart Claude Desktop and look for the MCP connection indicator.
   "mcpServers": {
     "nebula-notebook": {
       "command": "node",
-      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
-      "env": {
-        "NEBULA_URL": "http://localhost:3000"
-      }
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"]
     }
   }
 }
@@ -187,8 +172,7 @@ Restart Cursor and verify in Settings → Features → Model Context Protocol.
 **Option 1: Using the CLI**
 
 ```bash
-gemini mcp add --env NEBULA_URL=http://localhost:3000 \
-  nebula-notebook -- node /absolute/path/to/nebula-tools/bin/nebula-mcp.js
+gemini mcp add nebula-notebook -- node /absolute/path/to/nebula-tools/bin/nebula-mcp.js
 ```
 
 **Option 2: Manual Configuration**
@@ -198,10 +182,7 @@ gemini mcp add --env NEBULA_URL=http://localhost:3000 \
   "mcpServers": {
     "nebula-notebook": {
       "command": "node",
-      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"],
-      "env": {
-        "NEBULA_URL": "http://localhost:3000"
-      }
+      "args": ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"]
     }
   }
 }
@@ -215,7 +196,6 @@ gemini mcp add --env NEBULA_URL=http://localhost:3000 \
 
 ```bash
 codex mcp add nebula-notebook \
-  --env NEBULA_URL=http://localhost:3000 \
   -- node /absolute/path/to/nebula-tools/bin/nebula-mcp.js
 ```
 
@@ -225,9 +205,6 @@ codex mcp add nebula-notebook \
 [mcp_servers.nebula-notebook]
 command = "node"
 args = ["/absolute/path/to/nebula-tools/bin/nebula-mcp.js"]
-
-[mcp_servers.nebula-notebook.env]
-NEBULA_URL = "http://localhost:3000"
 ```
 
 #### ChatGPT Desktop
@@ -380,13 +357,7 @@ const result = await client.insertCellOp(path, 0, {
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `NEBULA_URL` | Nebula server URL | `http://localhost:3000` |
-
-**Notes**:
-- Default dev setup uses port 3000
-- For SSH tunnels or custom ports, update `NEBULA_URL` (e.g., `http://localhost:8080`)
+No environment variables are required for the MCP server. Always choose the target Nebula instance with `connect_server(base_url=...)` inside the MCP session.
 
 ## Development
 
@@ -442,20 +413,16 @@ This creates a double pendulum chaos simulation notebook at `/tmp/double-pendulu
 4. **Test the MCP server directly**:
    ```bash
    cd /path/to/nebula-tools
-   NEBULA_URL=http://localhost:3000 node bin/nebula-mcp.js
+   node bin/nebula-mcp.js
    ```
    Should start without errors and accept stdin/stdout communication
 
 ### Port Configuration
 
-Make sure you're using the correct port:
-```json
-"env": {
-  "NEBULA_URL": "http://localhost:3000"
-}
+Make sure you're connecting to the correct port by calling:
+```python
+connect_server(base_url="http://localhost:3000")  # or your SSH-forwarded port
 ```
-
-Default is port 3000. If you're using a custom port or SSH tunnel, update `NEBULA_URL` accordingly.
 
 ### Path Issues
 

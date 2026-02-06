@@ -76,6 +76,7 @@ export class NebulaClient {
     activeAgentSessions = new Set();
     agentSessionInFlight = new Map();
     lastBackend;
+    activeNotebookPath = null;
     // Track last tool call timestamp per notebook path for user change detection
     lastToolCallTimestamp = new Map();
     constructor(config = {}) {
@@ -96,6 +97,21 @@ export class NebulaClient {
         const backend = this.lastBackend;
         this.lastBackend = undefined;
         return backend;
+    }
+    /**
+     * Get the notebook path associated with the active agent session (if any).
+     */
+    getActiveNotebookPath() {
+        return this.activeNotebookPath;
+    }
+    setActiveNotebookPath(path) {
+        this.activeNotebookPath = path;
+    }
+    clearActiveNotebookPath(path) {
+        if (this.activeNotebookPath === path) {
+            const remaining = Array.from(this.activeAgentSessions);
+            this.activeNotebookPath = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+        }
     }
     /**
      * Check if an error is retryable (network/connection errors)
@@ -1425,8 +1441,9 @@ export class NebulaClient {
      * @param agentId - Optional identifier for this agent session
      * @param force - If true, forcibly end any existing session and steal the lock.
      *                Use only with explicit user permission.
+     * @param lastSessionTimestamp - Optional timestamp (ms) to fetch updates since last session.
      */
-    async startAgentSession(path, agentId, force) {
+    async startAgentSession(path, agentId, force, lastSessionTimestamp) {
         const operation = {
             type: 'startAgentSession',
             notebookPath: path,
@@ -1434,6 +1451,7 @@ export class NebulaClient {
             clientName: this.clientName,
             clientVersion: this.clientVersion,
             force,
+            lastSessionTimestamp,
         };
         const result = await this.applyOperation(operation);
         if (!result.success) {
@@ -1444,10 +1462,12 @@ export class NebulaClient {
             return { success: false, error: opResult.error };
         }
         this.activeAgentSessions.add(path);
+        this.setActiveNotebookPath(path);
         return {
             success: true,
             data: {
                 warning: opResult.warning,
+                updatesSince: opResult.updatesSince,
             },
         };
     }
@@ -1469,6 +1489,7 @@ export class NebulaClient {
             return { success: false, error: opResult.error };
         }
         this.activeAgentSessions.delete(path);
+        this.clearActiveNotebookPath(path);
         return {
             success: true,
             data: {
@@ -1562,15 +1583,15 @@ export class NebulaClient {
         this.lastToolCallTimestamp.set(path, timestamp ?? Date.now());
     }
     /**
-     * Get user changes since the last tool call for a notebook.
+     * Get updates since the last tool call for a notebook.
      *
-     * Returns summaries of operations made by the user (not AI) since
-     * the last recorded tool call timestamp.
+     * Returns summaries of edits and events since the last recorded
+     * tool call timestamp (no source filtering).
      */
-    async getUserChangesOp(path) {
+    async getUpdatesSinceOp(path) {
         const sinceTimestamp = this.getLastToolCallTimestamp(path);
         const operation = {
-            type: 'getUserChanges',
+            type: 'getUpdatesSince',
             notebookPath: path,
             sinceTimestamp,
         };
@@ -1589,7 +1610,7 @@ export class NebulaClient {
         return {
             success: true,
             data: {
-                changes: opResult.userChanges ?? [],
+                updates: opResult.updatesSince ?? [],
                 sinceTimestamp,
                 serverTimestamp: opResult.serverTimestamp ?? Date.now(),
             },

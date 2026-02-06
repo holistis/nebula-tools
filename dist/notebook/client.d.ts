@@ -138,10 +138,17 @@ export declare class NebulaClient {
     private activeAgentSessions;
     private agentSessionInFlight;
     private lastBackend?;
+    private activeNotebookPath;
     private lastToolCallTimestamp;
     constructor(config?: NebulaClientConfig);
     private recordBackend;
     consumeLastBackend(): 'ui' | 'headless' | undefined;
+    /**
+     * Get the notebook path associated with the active agent session (if any).
+     */
+    getActiveNotebookPath(): string | null;
+    private setActiveNotebookPath;
+    private clearActiveNotebookPath;
     /**
      * Check if an error is retryable (network/connection errors)
      */
@@ -549,10 +556,12 @@ export declare class NebulaClient {
      * @param agentId - Optional identifier for this agent session
      * @param force - If true, forcibly end any existing session and steal the lock.
      *                Use only with explicit user permission.
+     * @param lastSessionTimestamp - Optional timestamp (ms) to fetch updates since last session.
      */
-    startAgentSession(path: string, agentId?: string, force?: boolean): Promise<ToolResult<{
+    startAgentSession(path: string, agentId?: string, force?: boolean, lastSessionTimestamp?: number): Promise<ToolResult<{
         warning?: string;
         previousSessionDuration?: number;
+        updatesSince?: import('../types.js').UpdateSummary[];
     }>>;
     /**
      * End an agent session (unlocks notebook).
@@ -600,19 +609,13 @@ export declare class NebulaClient {
      */
     recordToolCallTimestamp(path: string, timestamp?: number): void;
     /**
-     * Get user changes since the last tool call for a notebook.
+     * Get updates since the last tool call for a notebook.
      *
-     * Returns summaries of operations made by the user (not AI) since
-     * the last recorded tool call timestamp.
+     * Returns summaries of edits and events since the last recorded
+     * tool call timestamp (no source filtering).
      */
-    getUserChangesOp(path: string): Promise<ToolResult<{
-        changes: Array<{
-            type: string;
-            cellId?: string;
-            cellIndex?: number;
-            timestamp: number;
-            description: string;
-        }>;
+    getUpdatesSinceOp(path: string): Promise<ToolResult<{
+        updates: import('../types.js').UpdateSummary[];
         sinceTimestamp: number;
         serverTimestamp: number;
     }>>;

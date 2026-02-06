@@ -4,7 +4,7 @@
  * Tools for reading, writing, and manipulating notebook cells.
  */
 import type { Tool } from './types.js';
-import type { NotebookCell, CellOutput } from '../types.js';
+import type { NotebookCell, CellOutput, UpdateSummary } from '../types.js';
 export interface ReadNotebookParams {
     path: string;
     include_outputs?: boolean;
@@ -175,7 +175,7 @@ export interface UpdateMetadataResult {
 }
 export declare const updateMetadataTool: Tool<UpdateMetadataParams, UpdateMetadataResult>;
 export interface ConnectServerParams {
-    base_url?: string;
+    base_url: string;
 }
 export interface ConnectServerResult {
     url: string;
@@ -185,9 +185,11 @@ export interface StartAgentSessionParams {
     path: string;
     agent_id?: string;
     force?: boolean;
+    last_session_timestamp?: number;
 }
 export interface StartAgentSessionResult {
     warning?: string;
+    updatesSince?: UpdateSummary[];
 }
 export declare const startAgentSessionTool: Tool<StartAgentSessionParams, StartAgentSessionResult>;
 export interface EndAgentSessionParams {
@@ -225,6 +227,17 @@ export interface InsertCellsResult {
     totalCells: number;
 }
 export declare const insertCellsTool: Tool<InsertCellsParams, InsertCellsResult>;
+export interface ClearNotebookParams {
+    path: string;
+}
+export interface ClearNotebookResult {
+    deletedCount: number;
+    metadata?: {
+        totalCells?: number;
+        operationTime?: number;
+    };
+}
+export declare const clearNotebookTool: Tool<ClearNotebookParams, ClearNotebookResult>;
 export interface ClearOutputsParams {
     path: string;
     cell_ids?: string[];
@@ -235,5 +248,5 @@ export interface ClearOutputsResult {
     notFound?: string[];
 }
 export declare const clearOutputsTool: Tool<ClearOutputsParams, ClearOutputsResult>;
-export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<CreateNotebookParams, CreateNotebookResult> | Tool<MoveCellParams, MoveCellResult> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult> | Tool<ConnectServerParams, ConnectServerResult> | Tool<StartAgentSessionParams, StartAgentSessionResult> | Tool<EndAgentSessionParams, EndAgentSessionResult> | Tool<DeleteCellsParams, DeleteCellsResult> | Tool<InsertCellsParams, InsertCellsResult> | Tool<ClearOutputsParams, ClearOutputsResult>)[];
+export declare const notebookTools: (Tool<ReadNotebookParams, ReadNotebookResult> | Tool<ReadCellParams, ReadCellResult> | Tool<ReadOutputParams, ReadOutputResult> | Tool<InsertCellParams, InsertCellResult> | Tool<UpdateCellParams, UpdateCellResult> | Tool<DeleteCellParams, void> | Tool<CreateNotebookParams, CreateNotebookResult> | Tool<MoveCellParams, MoveCellResult> | Tool<DuplicateCellParams, DuplicateCellResult> | Tool<SearchCellsParams, SearchCellsResult> | Tool<UpdateMetadataParams, UpdateMetadataResult> | Tool<ConnectServerParams, ConnectServerResult> | Tool<StartAgentSessionParams, StartAgentSessionResult> | Tool<EndAgentSessionParams, EndAgentSessionResult> | Tool<DeleteCellsParams, DeleteCellsResult> | Tool<InsertCellsParams, InsertCellsResult> | Tool<ClearNotebookParams, ClearNotebookResult> | Tool<ClearOutputsParams, ClearOutputsResult>)[];
 //# sourceMappingURL=notebook.d.ts.map

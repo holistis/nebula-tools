@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { NebulaClient } from '../notebook/client.js';
 import { executeToolForMCP, executeToolByName, hasTool } from '../tools/index.js';
 
-const TEST_NOTEBOOK_PATH = '/tmp/mcp-test-notebook.ipynb';
+const TEST_NOTEBOOK_PATH = `/tmp/mcp-test-notebook-${Date.now()}-${Math.random().toString(16).slice(2)}.ipynb`;
 
 const NEBULA_URL = process.env.NEBULA_URL || 'http://localhost:3000';
 
@@ -96,12 +96,12 @@ describe('MCP Tool Execution Integration', () => {
   // Kernel Tool Execution Tests
   // ===========================================================================
   describe('Kernel Tools', () => {
-    let sessionId: string;
     let hasKernels = true;
 
     beforeAll(async () => {
       const kernels = await client.listKernels();
       hasKernels = kernels.success && (kernels.data?.length ?? 0) > 0;
+      await executeToolForMCP('start_agent_session', { path: TEST_NOTEBOOK_PATH }, client);
     });
 
     it('should execute list_kernels with display names', async () => {
@@ -117,18 +117,11 @@ describe('MCP Tool Execution Integration', () => {
       const result = await executeToolForMCP('kernel_start', { kernel_name: 'python3' }, client);
       expect(result.isError).toBeFalsy();
       expect((result.content[0] as { type: 'text'; text: string }).text).toContain('Kernel started');
-
-      // Extract session ID for later tests
-      const match = (result.content[0] as { type: 'text'; text: string }).text.match(/Kernel started: ([^\s]+)/);
-      if (match) {
-        sessionId = match[1];
-      }
     }, 60000);
 
     it('should execute kernel_restart', async () => {
-      if (!sessionId) return;
-
-      const result = await executeToolForMCP('kernel_restart', { session_id: sessionId }, client);
+      if (!hasKernels) return;
+      const result = await executeToolForMCP('kernel_restart', {}, client);
       // Session may have been cleaned up if test ran slowly - skip in that case
       if (result.isError && (result.content[0] as { type: 'text'; text: string }).text.includes('not found')) {
         return;
@@ -138,9 +131,8 @@ describe('MCP Tool Execution Integration', () => {
     });
 
     it('should execute kernel_interrupt', async () => {
-      if (!sessionId) return;
-
-      const result = await executeToolForMCP('kernel_interrupt', { session_id: sessionId }, client);
+      if (!hasKernels) return;
+      const result = await executeToolForMCP('kernel_interrupt', {}, client);
       // Session may have been cleaned up if test ran slowly - skip in that case
       if (result.isError && (result.content[0] as { type: 'text'; text: string }).text.includes('not found')) {
         return;
@@ -150,9 +142,8 @@ describe('MCP Tool Execution Integration', () => {
     });
 
     it('should execute kernel_stop', async () => {
-      if (!sessionId) return;
-
-      const result = await executeToolForMCP('kernel_stop', { session_id: sessionId }, client);
+      if (!hasKernels) return;
+      const result = await executeToolForMCP('kernel_stop', {}, client);
       // Session may have been cleaned up if test ran slowly - skip in that case
       if (result.isError && (result.content[0] as { type: 'text'; text: string }).text.includes('not found')) {
         return;

@@ -249,6 +249,8 @@ export interface StartAgentSessionOp {
   agentId?: string;
   /** Force steal the lock even if another session is active. Use with user permission only. */
   force?: boolean;
+  /** Optional timestamp to return updates since last agent session (ms since epoch). */
+  lastSessionTimestamp?: number;
 }
 
 /**
@@ -338,26 +340,60 @@ export interface ExecuteCellOp {
 }
 
 /**
- * Get user changes since a timestamp
+ * Get updates since a timestamp
  *
- * Used by agents to detect what the user changed between tool calls.
- * Returns summaries of user operations (not AI operations).
+ * Used by agents to detect what changed between tool calls.
+ * Returns summaries of edits and events (no source filtering).
  */
-export interface GetUserChangesOp {
-  type: 'getUserChanges';
+export interface GetUpdatesSinceOp {
+  type: 'getUpdatesSince';
   notebookPath: string;
   sinceTimestamp: number;
 }
 
-/**
- * Summary of a user change
- */
-export interface UserChangeSummary {
+/** Source of an update (for tracking AI vs user vs MCP edits) */
+export type EditSource = 'user' | 'ai' | 'mcp' | 'system' | 'error';
+
+/** Category for non-undoable events */
+export type EventCategory = 'execution' | 'kernel' | 'system' | 'ui';
+
+/** Summary of an update (edit or event) for agent awareness */
+export interface UpdateSummary {
+  kind: 'edit' | 'event';
   type: string;
+  category?: EventCategory;
+  name?: string;
   cellId?: string;
   cellIndex?: number;
   timestamp: number;
   description: string;
+  source?: EditSource;
+  runId?: string;
+  data?: Record<string, unknown>;
+}
+
+/**
+ * Kernel operations (notebook-scoped via startAgentSession)
+ */
+export interface StartKernelOp {
+  type: 'startKernel';
+  notebookPath: string;
+  kernelName?: string;
+}
+
+export interface ShutdownKernelOp {
+  type: 'shutdownKernel';
+  notebookPath: string;
+}
+
+export interface RestartKernelOp {
+  type: 'restartKernel';
+  notebookPath: string;
+}
+
+export interface InterruptKernelOp {
+  type: 'interruptKernel';
+  notebookPath: string;
 }
 
 /**
@@ -384,8 +420,13 @@ export type NotebookOperation = (
   | ClearOutputsOp
   // Execution
   | ExecuteCellOp
-  // User change tracking
-  | GetUserChangesOp
+  // Update tracking
+  | GetUpdatesSinceOp
+  // Kernel operations
+  | StartKernelOp
+  | ShutdownKernelOp
+  | RestartKernelOp
+  | InterruptKernelOp
 ) & AgentContextFields;
 
 /**
@@ -474,9 +515,10 @@ export interface OperationResult {
   executionStatus?: 'idle' | 'busy' | 'error';
   executionTime?: number;
   sessionId?: string;
+  kernelName?: string;
 
-  /** User changes since a timestamp (for getUserChanges operation) */
-  userChanges?: UserChangeSummary[];
+  /** Updates since a timestamp (getUpdatesSince) or last session (startAgentSession) */
+  updatesSince?: UpdateSummary[];
   /** Server timestamp for tracking changes (returned with every operation) */
   serverTimestamp?: number;
 

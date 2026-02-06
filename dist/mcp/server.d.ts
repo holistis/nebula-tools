@@ -8,10 +8,10 @@ import { NebulaClient } from '../notebook/client.js';
 export declare class NebulaMCPServer {
     private client;
     private currentUrl;
-    private defaultUrl;
     private agentId;
     private clientName;
     private clientVersion;
+    private hasConnected;
     private readonly supportedProtocols;
     private readonly defaultProtocol;
     constructor();
@@ -19,7 +19,7 @@ export declare class NebulaMCPServer {
      * Connect to a Nebula server
      * All subsequent operations will use this connection
      */
-    connectToServer(baseUrl?: string): void;
+    connectToServer(baseUrl: string): void;
     /**
      * Get the current active client
      */

@@ -27,23 +27,27 @@ interface JsonRpcResponse {
 export class NebulaMCPServer {
   private client: NebulaClient;
   private currentUrl: string;
-  private defaultUrl: string;
   private agentId: string;
   private clientName: string;
   private clientVersion: string;
+  private hasConnected: boolean;
   private readonly supportedProtocols = ['2025-06-18', '2024-11-05'] as const;
   private readonly defaultProtocol = '2024-11-05';
 
   constructor() {
-    // Environment variable: NEBULA_URL (e.g., http://localhost:3000)
-    this.defaultUrl = process.env.NEBULA_URL || 'http://localhost:3000';
-    this.currentUrl = this.defaultUrl;
+    // Intentionally start "disconnected": callers must explicitly choose a server
+    // via connect_server(base_url=...). This avoids accidental writes to the wrong
+    // instance when multiple Nebula servers are in use.
+    this.currentUrl = '';
     this.agentId = randomUUID();
     // clientName will be set from MCP initialize handshake
     this.clientName = 'MCP Agent';
     this.clientVersion = '0.1.0';
+    this.hasConnected = false;
     this.client = new NebulaClient({
-      baseUrl: this.currentUrl,
+      // Placeholder until connect_server is called. We never execute tools without
+      // an explicit connect_server, so this is safe.
+      baseUrl: this.currentUrl || 'http://127.0.0.1:0',
       agentId: this.agentId,
       clientName: this.clientName,
       clientVersion: this.clientVersion,
@@ -52,15 +56,20 @@ export class NebulaMCPServer {
 
     // Log configuration on startup (to stderr, not stdout which is for JSON-RPC)
     console.error(`[Nebula MCP] Agent ID: ${this.agentId.slice(0, 8)}`);
-    console.error(`[Nebula MCP] Default URL: ${this.defaultUrl}`);
+    if (process.env.NEBULA_URL) {
+      console.error(`[Nebula MCP] Note: NEBULA_URL is ignored. Use connect_server(base_url=...) instead.`);
+    }
   }
 
   /**
    * Connect to a Nebula server
    * All subsequent operations will use this connection
    */
-  connectToServer(baseUrl?: string): void {
-    const url = baseUrl || this.defaultUrl;
+  connectToServer(baseUrl: string): void {
+    const url = baseUrl;
+    if (!url || typeof url !== 'string') {
+      throw new Error('connect_server requires base_url');
+    }
     if (url !== this.currentUrl) {
       this.currentUrl = url;
       this.client = new NebulaClient({
@@ -74,6 +83,7 @@ export class NebulaMCPServer {
     } else {
       console.error(`[Nebula MCP] Already connected to: ${url}`);
     }
+    this.hasConnected = true;
   }
 
   /**
@@ -135,7 +145,19 @@ export class NebulaMCPServer {
 
         case 'tools/list':
           // Get tool definitions from the unified tools module
-          result = { tools: getToolDefinitions() };
+          {
+            const connectNote = ' MCP: call connect_server first (see connect_server for workflow).';
+            const tools = getToolDefinitions().map(def => {
+              if (def.name === 'connect_server') {
+                return def;
+              }
+              return {
+                ...def,
+                description: `${def.description ?? ''}${connectNote}`,
+              };
+            });
+            result = { tools };
+          }
           break;
 
         case 'tools/call':
@@ -176,9 +198,26 @@ export class NebulaMCPServer {
       // Special handling for connect_server
       if (name === 'connect_server') {
         const { base_url } = args as { base_url?: string };
+        if (!base_url || typeof base_url !== 'string' || base_url.trim() === '') {
+          return {
+            content: [{ type: 'text', text: 'Error: connect_server requires base_url (e.g., http://localhost:3000).' }],
+            isError: true,
+          };
+        }
         this.connectToServer(base_url);
+        return { content: [{ type: 'text', text: `Connected to ${this.currentUrl}` }] };
+      }
+
+      if (!this.hasConnected) {
         return {
-          content: [{ type: 'text', text: `Connected to ${this.currentUrl}` }],
+          content: [
+            {
+              type: 'text',
+              text:
+                'Error: connect_server(base_url=...) must be called once at the start of every MCP session before any other tool call.',
+            },
+          ],
+          isError: true,
         };
       }
 
@@ -206,8 +245,8 @@ export class NebulaMCPServer {
 
     console.error('='.repeat(60));
     console.error('Nebula MCP Server Started');
-    console.error(`Connected to: ${this.currentUrl}`);
-    console.error(`Use connect_server tool to switch instances`);
+    console.error('No server connected yet.');
+    console.error('Call connect_server(base_url=...) before using any other tool.');
     console.error(
       `Protocol: Model Context Protocol (MCP) ${this.defaultProtocol} (supports ${this.supportedProtocols.join(
         ', '

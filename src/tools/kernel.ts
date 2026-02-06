@@ -7,6 +7,31 @@
 import type { Tool, ToolResult, MCPContent } from './types.js';
 import type { NebulaClient } from '../notebook/client.js';
 
+async function resolveKernelSessionId(
+  client: NebulaClient,
+  notebookPath: string
+): Promise<ToolResult<{ sessionId: string }>> {
+  const sessions = await client.listSessions();
+  if (!sessions.success) {
+    return { success: false, error: sessions.error };
+  }
+
+  const matching = (sessions.data || []).filter(s => s.file_path === notebookPath);
+  if (matching.length === 0) {
+    return { success: false, error: 'Kernel session not found for notebook' };
+  }
+
+  // If the backend provides created_at, pick the newest session.
+  // Otherwise fall back to the first matching session.
+  const best = matching.reduce((best, s) => {
+    const bestCreated = typeof (best as any).created_at === 'number' ? (best as any).created_at : -Infinity;
+    const sCreated = typeof (s as any).created_at === 'number' ? (s as any).created_at : -Infinity;
+    return sCreated > bestCreated ? s : best;
+  }, matching[0]);
+
+  return { success: true, data: { sessionId: best.id } };
+}
+
 // =============================================================================
 // list_kernels
 // =============================================================================
@@ -64,7 +89,6 @@ export const listKernelsTool: Tool<ListKernelsParams, ListKernelsResult> = {
 
 export interface KernelStartParams {
   kernel_name?: string;
-  file_path?: string;
 }
 
 export interface KernelStartResult {
@@ -75,12 +99,11 @@ export interface KernelStartResult {
 export const kernelStartTool: Tool<KernelStartParams, KernelStartResult> = {
   definition: {
     name: 'kernel_start',
-    description: 'Start a new kernel session for a notebook',
+    description: 'Start a new kernel session for the active notebook (requires start_agent_session)',
     inputSchema: {
       type: 'object',
       properties: {
         kernel_name: { type: 'string', description: 'Kernel name (e.g., python3). Default: python3.' },
-        file_path: { type: 'string', description: 'Optional notebook file path to associate with the kernel' },
       },
       required: [],
     },
@@ -88,16 +111,18 @@ export const kernelStartTool: Tool<KernelStartParams, KernelStartResult> = {
   },
 
   async execute(params, client) {
-    const kernelName = params.kernel_name || 'python3';
-    const result = await client.startKernel(kernelName, params.file_path);
-    if (!result.success) {
-      return { success: false, error: result.error };
+    const notebookPath = client.getActiveNotebookPath();
+    if (!notebookPath) {
+      return { success: false, error: 'No active agent session. Call start_agent_session first.' };
     }
+    const kernelName = params.kernel_name || 'python3';
+    const result = await client.getOrCreateKernelForFile(notebookPath, kernelName);
+    if (!result.success) return { success: false, error: result.error };
     return {
       success: true,
       data: {
         sessionId: result.data!.sessionId,
-        kernelName: result.data!.kernelName,
+        kernelName: result.data!.kernelName || kernelName,
       },
     };
   },
@@ -116,25 +141,28 @@ export const kernelStartTool: Tool<KernelStartParams, KernelStartResult> = {
 // =============================================================================
 
 export interface KernelStopParams {
-  session_id: string;
 }
 
 export const kernelStopTool: Tool<KernelStopParams, void> = {
   definition: {
     name: 'kernel_stop',
-    description: 'Stop and shutdown a kernel session',
+    description: 'Stop and shutdown the active notebook kernel (requires start_agent_session)',
     inputSchema: {
       type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'Session ID of the kernel to stop' },
-      },
-      required: ['session_id'],
+      properties: {},
+      required: [],
     },
     annotations: { destructiveHint: true },
   },
 
   async execute(params, client) {
-    const result = await client.shutdownKernel(params.session_id);
+    const notebookPath = client.getActiveNotebookPath();
+    if (!notebookPath) {
+      return { success: false, error: 'No active agent session. Call start_agent_session first.' };
+    }
+    const session = await resolveKernelSessionId(client, notebookPath);
+    if (!session.success) return { success: false, error: session.error };
+    const result = await client.shutdownKernel(session.data!.sessionId);
     return result.success ? { success: true } : { success: false, error: result.error };
   },
 
@@ -151,26 +179,39 @@ export const kernelStopTool: Tool<KernelStopParams, void> = {
 // =============================================================================
 
 export interface KernelRestartParams {
-  session_id: string;
 }
 
 export const kernelRestartTool: Tool<KernelRestartParams, void> = {
   definition: {
     name: 'kernel_restart',
-    description: 'Restart a kernel session (clears all variables)',
+    description: 'Restart the active notebook kernel (clears all variables, requires start_agent_session)',
     inputSchema: {
       type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'Session ID of the kernel to restart' },
-      },
-      required: ['session_id'],
+      properties: {},
+      required: [],
     },
     annotations: { destructiveHint: true },
   },
 
   async execute(params, client) {
-    const result = await client.restartKernel(params.session_id);
-    return result.success ? { success: true } : { success: false, error: result.error };
+    const notebookPath = client.getActiveNotebookPath();
+    if (!notebookPath) {
+      return { success: false, error: 'No active agent session. Call start_agent_session first.' };
+    }
+    // Prefer a robust restart over the direct restart endpoint, which can be flaky
+    // depending on backend implementation. Shutdown (best effort), then start a new
+    // session for this file.
+    const existing = await resolveKernelSessionId(client, notebookPath);
+    if (existing.success) {
+      const stopped = await client.shutdownKernel(existing.data!.sessionId);
+      // Ignore not-found errors: the session may have already been cleaned up.
+      if (!stopped.success && !stopped.error?.includes('not found')) {
+        return { success: false, error: stopped.error };
+      }
+    }
+
+    const started = await client.getOrCreateKernelForFile(notebookPath, 'python3');
+    return started.success ? { success: true } : { success: false, error: started.error };
   },
 
   formatForMCP(result) {
@@ -186,25 +227,28 @@ export const kernelRestartTool: Tool<KernelRestartParams, void> = {
 // =============================================================================
 
 export interface KernelInterruptParams {
-  session_id: string;
 }
 
 export const kernelInterruptTool: Tool<KernelInterruptParams, void> = {
   definition: {
     name: 'kernel_interrupt',
-    description: 'Interrupt a running execution in a kernel',
+    description: 'Interrupt execution in the active notebook kernel (requires start_agent_session)',
     inputSchema: {
       type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'Session ID of the kernel to interrupt' },
-      },
-      required: ['session_id'],
+      properties: {},
+      required: [],
     },
     annotations: { destructiveHint: false },
   },
 
   async execute(params, client) {
-    const result = await client.interruptKernel(params.session_id);
+    const notebookPath = client.getActiveNotebookPath();
+    if (!notebookPath) {
+      return { success: false, error: 'No active agent session. Call start_agent_session first.' };
+    }
+    const session = await resolveKernelSessionId(client, notebookPath);
+    if (!session.success) return { success: false, error: session.error };
+    const result = await client.interruptKernel(session.data!.sessionId);
     return result.success ? { success: true } : { success: false, error: result.error };
   },
 

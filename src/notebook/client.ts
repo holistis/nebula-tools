@@ -147,6 +147,7 @@ export class NebulaClient {
   private activeAgentSessions: Set<string> = new Set();
   private agentSessionInFlight: Map<string, Promise<ToolResult<{ warning?: string }>>> = new Map();
   private lastBackend?: 'ui' | 'headless';
+  private activeNotebookPath: string | null = null;
   // Track last tool call timestamp per notebook path for user change detection
   private lastToolCallTimestamp: Map<string, number> = new Map();
 
@@ -170,6 +171,24 @@ export class NebulaClient {
     const backend = this.lastBackend;
     this.lastBackend = undefined;
     return backend;
+  }
+
+  /**
+   * Get the notebook path associated with the active agent session (if any).
+   */
+  getActiveNotebookPath(): string | null {
+    return this.activeNotebookPath;
+  }
+
+  private setActiveNotebookPath(path: string): void {
+    this.activeNotebookPath = path;
+  }
+
+  private clearActiveNotebookPath(path: string): void {
+    if (this.activeNotebookPath === path) {
+      const remaining = Array.from(this.activeAgentSessions);
+      this.activeNotebookPath = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+    }
   }
 
   /**
@@ -1865,10 +1884,17 @@ export class NebulaClient {
    * @param agentId - Optional identifier for this agent session
    * @param force - If true, forcibly end any existing session and steal the lock.
    *                Use only with explicit user permission.
+   * @param lastSessionTimestamp - Optional timestamp (ms) to fetch updates since last session.
    */
-  async startAgentSession(path: string, agentId?: string, force?: boolean): Promise<ToolResult<{
+  async startAgentSession(
+    path: string,
+    agentId?: string,
+    force?: boolean,
+    lastSessionTimestamp?: number
+  ): Promise<ToolResult<{
     warning?: string;
     previousSessionDuration?: number;
+    updatesSince?: import('../types.js').UpdateSummary[];
   }>> {
     const operation: import('../types.js').StartAgentSessionOp & import('../types.js').AgentContextFields = {
       type: 'startAgentSession',
@@ -1877,6 +1903,7 @@ export class NebulaClient {
       clientName: this.clientName,
       clientVersion: this.clientVersion,
       force,
+      lastSessionTimestamp,
     };
 
     const result = await this.applyOperation(operation);
@@ -1889,11 +1916,13 @@ export class NebulaClient {
       return { success: false, error: opResult.error };
     }
     this.activeAgentSessions.add(path);
+    this.setActiveNotebookPath(path);
 
     return {
       success: true,
       data: {
         warning: opResult.warning,
+        updatesSince: opResult.updatesSince,
       },
     };
   }
@@ -1921,6 +1950,7 @@ export class NebulaClient {
       return { success: false, error: opResult.error };
     }
     this.activeAgentSessions.delete(path);
+    this.clearActiveNotebookPath(path);
 
     return {
       success: true,
@@ -2044,26 +2074,20 @@ export class NebulaClient {
   }
 
   /**
-   * Get user changes since the last tool call for a notebook.
+   * Get updates since the last tool call for a notebook.
    *
-   * Returns summaries of operations made by the user (not AI) since
-   * the last recorded tool call timestamp.
+   * Returns summaries of edits and events since the last recorded
+   * tool call timestamp (no source filtering).
    */
-  async getUserChangesOp(path: string): Promise<ToolResult<{
-    changes: Array<{
-      type: string;
-      cellId?: string;
-      cellIndex?: number;
-      timestamp: number;
-      description: string;
-    }>;
+  async getUpdatesSinceOp(path: string): Promise<ToolResult<{
+    updates: import('../types.js').UpdateSummary[];
     sinceTimestamp: number;
     serverTimestamp: number;
   }>> {
     const sinceTimestamp = this.getLastToolCallTimestamp(path);
 
-    const operation: import('../types.js').GetUserChangesOp = {
-      type: 'getUserChanges',
+    const operation: import('../types.js').GetUpdatesSinceOp = {
+      type: 'getUpdatesSince',
       notebookPath: path,
       sinceTimestamp,
     };
@@ -2086,7 +2110,7 @@ export class NebulaClient {
     return {
       success: true,
       data: {
-        changes: opResult.userChanges ?? [],
+        updates: opResult.updatesSince ?? [],
         sinceTimestamp,
         serverTimestamp: opResult.serverTimestamp ?? Date.now(),
       },

@@ -7,6 +7,8 @@ import { NebulaMCPServer } from '../mcp/server.js';
 import { spawn, ChildProcess } from 'child_process';
 import * as readline from 'readline';
 
+const NEBULA_URL = process.env.NEBULA_URL || 'http://localhost:3000';
+
 describe('MCP Server', () => {
   let serverProcess: ChildProcess;
   let rl: readline.Interface;
@@ -92,7 +94,7 @@ describe('MCP Server', () => {
       expect(result).toBeDefined();
       expect(result.tools).toBeDefined();
       expect(Array.isArray(result.tools)).toBe(true);
-      expect(result.tools.length).toBe(30); // 14 notebook + 5 kernel + 1 execution + 1 connect + 2 batch + 7 file
+      expect(result.tools.length).toBe(31); // 18 notebook + 5 kernel + 1 execution + 7 file
     });
 
     it('should have correct tool definitions', async () => {
@@ -119,9 +121,23 @@ describe('MCP Server', () => {
       const connectServer = result.tools.find((t: any) => t.name === 'connect_server');
       expect(connectServer).toBeDefined();
       expect(connectServer.inputSchema.properties.base_url).toBeDefined();
+      expect(connectServer.inputSchema.required).toContain('base_url');
     });
 
     it('should handle tools/call for list_kernels', async () => {
+      await sendRequest('tools/call', {
+        name: 'connect_server',
+        arguments: { base_url: NEBULA_URL },
+      });
+      const testPath = `/tmp/mcp-server-kernel-test-${Date.now()}-${Math.random().toString(16).slice(2)}.ipynb`;
+      await sendRequest('tools/call', {
+        name: 'create_notebook',
+        arguments: { path: testPath, overwrite: true },
+      });
+      await sendRequest('tools/call', {
+        name: 'start_agent_session',
+        arguments: { path: testPath },
+      });
       const result = await sendRequest('tools/call', {
         name: 'list_kernels',
         arguments: {},
@@ -156,6 +172,10 @@ describe('MCP Server', () => {
     });
 
     it('should return error for unknown tool', async () => {
+      await sendRequest('tools/call', {
+        name: 'connect_server',
+        arguments: { base_url: NEBULA_URL },
+      });
       const result = await sendRequest('tools/call', {
         name: 'unknown_tool_xyz',
         arguments: {},

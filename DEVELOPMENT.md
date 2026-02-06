@@ -172,10 +172,7 @@ def _should_auto_continue(text: str) -> bool:
 
 ## MCP Server Configuration
 
-**Environment Variables:**
-- `NEBULA_URL` - Backend URL (default: http://localhost:3000)
-- Use frontend dev server (port 3000) which proxies `/api/*` to backend (port 8000)
-- For SSH tunnels, use the forwarded port (e.g., http://localhost:4000)
+The MCP server starts disconnected. Always call `connect_server(base_url=...)` inside the MCP session before using other tools.
 
 **Configuration File:** `~/.claude.json`
 ```json
@@ -184,10 +181,7 @@ def _should_auto_continue(text: str) -> bool:
     "/path/to/project": {
       "mcpServers": {
         "nebula-notebook": {
-          "command": "nebula-mcp",
-          "env": {
-            "NEBULA_URL": "http://localhost:4000"
-          }
+          "command": "nebula-mcp"
         }
       }
     }
@@ -225,7 +219,10 @@ python -m agent_cli.main \
 
 The MCP server logs to stderr:
 ```
-[Nebula MCP] Default URL: http://localhost:3000
+[Nebula MCP] Agent ID: 1234abcd
+Nebula MCP Server Started
+No server connected yet.
+Call connect_server(base_url=...) before using any other tool.
 [Nebula MCP] Executing tool: insert_cell
 [Nebula MCP] Tool insert_cell completed successfully
 ```

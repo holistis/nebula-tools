@@ -60,9 +60,9 @@ describe('Tool Collections', () => {
       expect(allTools.length).toBe(expectedCount);
     });
 
-    it('should contain 30 total tools', () => {
-      // 17 notebook + 5 kernel + 1 execution + 7 files = 30
-      expect(allTools.length).toBe(30);
+    it('should contain 31 total tools', () => {
+      // 18 notebook + 5 kernel + 1 execution + 7 files = 31
+      expect(allTools.length).toBe(31);
     });
 
     it('should have unique tool names', () => {
@@ -108,8 +108,8 @@ describe('Tool Collections', () => {
   });
 
   describe('Individual Tool Arrays', () => {
-    it('notebookTools should have 17 tools', () => {
-      expect(notebookTools.length).toBe(17);
+    it('notebookTools should have 18 tools', () => {
+      expect(notebookTools.length).toBe(18);
     });
 
     it('kernelTools should have 5 tools', () => {
@@ -287,6 +287,7 @@ describe('Tool Definitions', () => {
       const def = connectServerTool.definition;
       expect(def.name).toBe('connect_server');
       expect(def.inputSchema.properties.base_url).toBeDefined();
+      expect(def.inputSchema.required).toContain('base_url');
     });
 
     it('start_agent_session should have correct schema', () => {
@@ -315,14 +316,13 @@ describe('Tool Definitions', () => {
       const def = kernelStartTool.definition;
       expect(def.name).toBe('kernel_start');
       expect(def.inputSchema.properties.kernel_name).toBeDefined();
-      expect(def.inputSchema.properties.file_path).toBeDefined();
       expect(def.inputSchema.required ?? []).toEqual([]);
     });
 
-    it('kernel_stop should require session_id', () => {
+    it('kernel_stop should have no required params', () => {
       const def = kernelStopTool.definition;
       expect(def.name).toBe('kernel_stop');
-      expect(def.inputSchema.required).toContain('session_id');
+      expect(def.inputSchema.required ?? []).toEqual([]);
     });
   });
 
@@ -424,7 +424,7 @@ describe('Tool Utility Functions', () => {
     it('should have correct counts per category', () => {
       const byCategory = getToolNamesByCategory();
 
-      expect(byCategory.notebook.length).toBe(17);
+      expect(byCategory.notebook.length).toBe(18);
       expect(byCategory.kernel.length).toBe(5);
       expect(byCategory.execution.length).toBe(1);
       expect(byCategory.files.length).toBe(7);
@@ -450,9 +450,9 @@ describe('formatForMCP Functions', () => {
         },
       });
 
-      expect(result).toHaveLength(1);
+      expect(result.length).toBeGreaterThan(0);
       expect(result[0].type).toBe('text');
-      expect((result[0] as { type: 'text'; text: string }).text).toContain('Notebook:');
+      expect((result[0] as { type: 'text'; text: string }).text).toContain('Notebook: /test.ipynb');
       expect((result[0] as { type: 'text'; text: string }).text).toContain('2 cells');
     });
 
@@ -467,8 +467,8 @@ describe('formatForMCP Functions', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].type).toBe('text');
-      expect((result[0] as { type: 'text'; text: string }).text).toContain('Cell 0');
-      expect((result[0] as { type: 'text'; text: string }).text).toContain('execution #5');
+      expect((result[0] as { type: 'text'; text: string }).text).toContain('#1 [code]');
+      expect((result[0] as { type: 'text'; text: string }).text).toContain('execution [5]');
       expect((result[0] as { type: 'text'; text: string }).text).toContain('x = 1');
     });
 

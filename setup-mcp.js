@@ -24,7 +24,6 @@ const __dirname = path.dirname(__filename);
 
 // Get absolute path to nebula-mcp.js
 const MCP_SERVER_PATH = path.join(__dirname, 'bin', 'nebula-mcp.js');
-const NEBULA_URL = process.env.NEBULA_URL || 'http://localhost:3000';
 
 // Config file locations
 const CONFIG_PATHS = {
@@ -41,18 +40,12 @@ const CONFIG_PATHS = {
 const NEBULA_MCP_CONFIG = {
   command: 'node',
   args: [MCP_SERVER_PATH],
-  env: {
-    NEBULA_URL: NEBULA_URL
-  }
 };
 
 const NEBULA_MCP_VSCODE_CONFIG = {
   type: 'stdio',
   command: 'node',
   args: [MCP_SERVER_PATH],
-  env: {
-    NEBULA_URL: NEBULA_URL
-  }
 };
 
 // Helper to check if command exists
@@ -130,6 +123,14 @@ function mergeServerConfig(existing, desired) {
       ...(isPlainObject(existing.env) ? existing.env : {}),
       ...(isPlainObject(desired.env) ? desired.env : {}),
     };
+  }
+  // We intentionally do NOT rely on a default server URL via env.
+  // Remove legacy NEBULA_URL to avoid accidental connections to the wrong instance.
+  if (isPlainObject(merged.env)) {
+    delete merged.env.NEBULA_URL;
+    if (Object.keys(merged.env).length === 0) {
+      delete merged.env;
+    }
   }
   return merged;
 }
@@ -222,9 +223,6 @@ function buildCodexBlock() {
     '[mcp_servers.nebula-notebook]',
     'command = "node"',
     `args = ["${MCP_SERVER_PATH}"]`,
-    '',
-    '[mcp_servers.nebula-notebook.env]',
-    `NEBULA_URL = "${NEBULA_URL}"`,
   ].join('\n');
 }
 
@@ -238,31 +236,27 @@ function escapeRegExp(value) {
 
 function extractCodexBlock(content) {
   const baseMatch = content.match(/\[mcp_servers\.nebula-notebook\][\s\S]*?(?=\n\[|$)/);
-  const envMatch = content.match(/\[mcp_servers\.nebula-notebook\.env\][\s\S]*?(?=\n\[|$)/);
   const parts = [];
   if (baseMatch) {
     parts.push(baseMatch[0].trim());
-  }
-  if (envMatch) {
-    parts.push(envMatch[0].trim());
   }
   return parts.join('\n\n').trim();
 }
 
 function codexHasRequiredConfig(content) {
   const baseMatch = content.match(/\[mcp_servers\.nebula-notebook\][\s\S]*?(?=\n\[|$)/);
-  const envMatch = content.match(/\[mcp_servers\.nebula-notebook\.env\][\s\S]*?(?=\n\[|$)/);
-  if (!baseMatch || !envMatch) {
+  if (!baseMatch) {
     return false;
   }
 
   const baseBlock = baseMatch[0];
-  const envBlock = envMatch[0];
   const hasCommand = /command\s*=\s*"node"/.test(baseBlock);
   const hasArgs = new RegExp(`args\\s*=\\s*\\[\\s*"${escapeRegExp(MCP_SERVER_PATH)}"\\s*\\]`).test(baseBlock);
-  const hasEnv = new RegExp(`NEBULA_URL\\s*=\\s*"${escapeRegExp(NEBULA_URL)}"`).test(envBlock);
+  const envMatch = content.match(/\[mcp_servers\.nebula-notebook\.env\][\s\S]*?(?=\n\[|$)/);
+  // If an env block exists, treat as not "clean" since we want to remove legacy NEBULA_URL defaults.
+  const hasEnvBlock = !!envMatch;
 
-  return hasCommand && hasArgs && hasEnv;
+  return hasCommand && hasArgs && !hasEnvBlock;
 }
 
 function stripCodexBlock(content) {
@@ -278,13 +272,14 @@ function prepareCodexContent(existingContent) {
   const existingBlock = extractCodexBlock(existingContent);
   const matchesRequired = codexHasRequiredConfig(existingContent);
   const hasDuplicates = baseCount > 1 || envCount > 1;
+  const hasLegacyEnv = envCount > 0;
   const isSame =
     !hasDuplicates &&
+    !hasLegacyEnv &&
     (matchesRequired ||
       (existingBlock &&
         normalizeToml(existingBlock) === normalizeToml(desiredBlock) &&
-        baseCount <= 1 &&
-        envCount <= 1));
+        baseCount <= 1));
 
   if (isSame) {
     return { changed: false, content: existingContent };
@@ -386,7 +381,6 @@ async function main() {
   // Show configuration details
   console.log('📦 Nebula MCP server will be configured at:');
   console.log(`    ${MCP_SERVER_PATH}\n`);
-  console.log(`⚙️  Environment: NEBULA_URL=${NEBULA_URL}\n`);
 
   console.log('⚙️  Configure Nebula MCP for:');
   toolNames.forEach(key => {

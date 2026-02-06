@@ -43,10 +43,7 @@ Then add to `~/.claude.json`:
 {
   "mcpServers": {
     "nebula-notebook": {
-      "command": "nebula-mcp",
-      "env": {
-        "NEBULA_URL": "http://localhost:4000"
-      }
+      "command": "nebula-mcp"
     }
   }
 }
@@ -60,10 +57,7 @@ Users don't need to install, just add to `~/.claude.json`:
   "mcpServers": {
     "nebula-notebook": {
       "command": "npx",
-      "args": ["-y", "nebula-tools"],
-      "env": {
-        "NEBULA_URL": "http://localhost:4000"
-      }
+      "args": ["-y", "nebula-tools"]
     }
   }
 }
@@ -79,7 +73,7 @@ Submit to https://smithery.ai/submit:
    - **Name**: Nebula Notebook
    - **Description**: MCP server for Nebula Notebook - Jupyter alternative with AI integration
    - **Category**: Development Tools
-   - **Environment Variables**: `NEBULA_URL` (default: http://localhost:3000)
+   - **Environment Variables**: none (server URL is provided via `connect_server(base_url=...)`)
 
 Users can then install with:
 ```bash
@@ -94,10 +88,7 @@ Users can install directly from GitHub:
   "mcpServers": {
     "nebula-notebook": {
       "command": "npx",
-      "args": ["-y", "github:jzthree/nebula-tools"],
-      "env": {
-        "NEBULA_URL": "http://localhost:4000"
-      }
+      "args": ["-y", "github:jzthree/nebula-tools"]
     }
   }
 }
@@ -130,10 +121,7 @@ Add to your `~/.claude.json`:
 {
   "mcpServers": {
     "nebula-notebook": {
-      "command": "nebula-mcp",
-      "env": {
-        "NEBULA_URL": "http://localhost:4000"
-      }
+      "command": "nebula-mcp"
     }
   }
 }
@@ -146,10 +134,7 @@ Or for npx (zero install):
   "mcpServers": {
     "nebula-notebook": {
       "command": "npx",
-      "args": ["-y", "nebula-tools"],
-      "env": {
-        "NEBULA_URL": "http://localhost:4000"
-      }
+      "args": ["-y", "nebula-tools"]
     }
   }
 }
@@ -180,10 +165,7 @@ cat > ~/.claude.json << 'EOF'
 {
   "mcpServers": {
     "nebula-notebook": {
-      "command": "nebula-mcp",
-      "env": {
-        "NEBULA_URL": "http://localhost:4000"
-      }
+      "command": "nebula-mcp"
     }
   }
 }

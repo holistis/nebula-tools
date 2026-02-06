@@ -85,7 +85,7 @@ const NOTEBOOK_TOOLS = new Set([
   'insert_cell', 'update_cell', 'delete_cell', 'delete_cells',
   'move_cell', 'duplicate_cell', 'insert_cells',
   'create_notebook', 'search_cells', 'update_metadata',
-  'clear_outputs', 'execute_cell',
+  'clear_notebook', 'clear_outputs', 'execute_cell',
   'start_agent_session', 'end_agent_session',
 ]);
 
@@ -116,17 +116,17 @@ export async function executeToolForMCP(
   const notebookPath = (params.path as string) || undefined;
   const isNotebookTool = NOTEBOOK_TOOLS.has(name) && notebookPath;
 
-  // Query user changes BEFORE executing the tool (to capture what happened since last call)
-  let userChanges: Array<{ type: string; cellId?: string; cellIndex?: number; timestamp: number; description: string }> = [];
+  // Query updates BEFORE executing the tool (to capture what happened since last call)
+  let updatesSince: Array<{ type: string; cellId?: string; cellIndex?: number; timestamp: number; description: string }> = [];
   if (isNotebookTool) {
     try {
-      const changesResult = await client.getUserChangesOp(notebookPath);
-      if (changesResult.success && changesResult.data?.changes.length) {
-        userChanges = changesResult.data.changes;
+      const updatesResult = await client.getUpdatesSinceOp(notebookPath);
+      if (updatesResult.success && updatesResult.data?.updates.length) {
+        updatesSince = updatesResult.data.updates;
       }
     } catch (e) {
-      // Silently ignore errors in user change tracking
-      console.error('[executeToolForMCP] Error getting user changes:', e);
+      // Silently ignore errors in update tracking
+      console.error('[executeToolForMCP] Error getting updates:', e);
     }
   }
 
@@ -158,14 +158,14 @@ export async function executeToolForMCP(
       content.push({ type: 'text', text: `Backend: ${backend}` });
     }
 
-    // Add user changes if any (silent if none)
-    if (userChanges.length > 0) {
-      const changesSummary = userChanges.map(c =>
+    // Add updates if any (silent if none)
+    if (updatesSince.length > 0) {
+      const changesSummary = updatesSince.map(c =>
         `  • ${c.description} (${new Date(c.timestamp).toLocaleTimeString()})`
       ).join('\n');
       content.push({
         type: 'text',
-        text: `\n📝 User changes since last tool call:\n${changesSummary}`,
+        text: `\n📝 Updates since last tool call:\n${changesSummary}`,
       });
     }
 

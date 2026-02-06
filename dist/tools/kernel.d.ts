@@ -17,7 +17,6 @@ export interface ListKernelsResult {
 export declare const listKernelsTool: Tool<ListKernelsParams, ListKernelsResult>;
 export interface KernelStartParams {
     kernel_name?: string;
-    file_path?: string;
 }
 export interface KernelStartResult {
     sessionId: string;
@@ -25,15 +24,12 @@ export interface KernelStartResult {
 }
 export declare const kernelStartTool: Tool<KernelStartParams, KernelStartResult>;
 export interface KernelStopParams {
-    session_id: string;
 }
 export declare const kernelStopTool: Tool<KernelStopParams, void>;
 export interface KernelRestartParams {
-    session_id: string;
 }
 export declare const kernelRestartTool: Tool<KernelRestartParams, void>;
 export interface KernelInterruptParams {
-    session_id: string;
 }
 export declare const kernelInterruptTool: Tool<KernelInterruptParams, void>;
 export declare const kernelTools: (Tool<ListKernelsParams, ListKernelsResult> | Tool<KernelStartParams, KernelStartResult> | Tool<KernelStopParams, void>)[];

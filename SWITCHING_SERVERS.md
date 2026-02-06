@@ -14,10 +14,11 @@ The MCP server maintains **one active connection** at a time. All operations use
 
 ## Example Workflow
 
-### 1. Start with default server (localhost:3000)
+### 1. Connect to a local server
 
 ```python
-# MCP server starts connected to localhost:3000 (or NEBULA_URL env var)
+# MCP server starts disconnected. Always connect explicitly.
+connect_server(base_url="http://localhost:3000")
 
 # Work with local notebooks
 start_agent_session(path="/home/user/local-analysis.ipynb")
@@ -50,8 +51,8 @@ end_agent_session(path="/data/remote-notebook.ipynb")
 ### 3. Switch back to default
 
 ```python
-# Reconnect to default server
-connect_server()  # No base_url = use default
+# Reconnect to local server (explicit)
+connect_server(base_url="http://localhost:3000")
 
 # Back to local server
 start_agent_session(path="/home/user/another-notebook.ipynb")

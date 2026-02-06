@@ -43,12 +43,14 @@ async function formatOutputs(outputs, usePlaceholders = false) {
 export const readNotebookTool = {
     definition: {
         name: 'read_notebook',
-        description: 'Read all cells from a notebook. Formats: "brief" (one-line previews), "content" (full code, no outputs), "detailed" (full code + inline images, default), "placeholder" (full code + text placeholders for images, recommended for Gemini). Outputs are truncated (100 lines regular, 200 lines errors).',
+        description: 'Read all cells from a notebook. Formats: "content" (full code, no outputs), "detailed" (full code + inline images, default), "placeholder" (full code + text placeholders for images, recommended for Gemini). Outputs are truncated (100 lines regular, 200 lines errors).',
         inputSchema: {
             type: 'object',
             properties: {
                 path: { type: 'string', description: 'Path to the notebook file (.ipynb)' },
-                format: { type: 'string', enum: ['brief', 'content', 'detailed', 'placeholder'], description: 'Output format: brief (previews), content (full code), detailed (code + inline images, default), placeholder (code + image placeholders, recommended for Gemini)' },
+                // NOTE: "brief" is intentionally omitted from schema to hide it from tool UIs.
+                // It remains supported in code for backward compatibility and is likely to be deprecated.
+                format: { type: 'string', enum: ['content', 'detailed', 'placeholder'], description: 'Output format: content (full code), detailed (code + inline images, default), placeholder (code + image placeholders, recommended for Gemini)' },
                 include_outputs: { type: 'boolean', description: 'Override output inclusion (default: true for detailed/placeholder, false for others)' },
                 max_lines: { type: 'number', description: 'Max lines per regular output (default: 100)' },
                 max_chars: { type: 'number', description: 'Max chars per regular output (default: 10000)' },
@@ -702,23 +704,26 @@ export const updateMetadataTool = {
 export const connectServerTool = {
     definition: {
         name: 'connect_server',
-        description: `Connect to a Nebula server. Call this ONCE at the start of your session if you need to use a non-default server (e.g., SSH-tunneled remote). All subsequent operations will use this connection.
+        description: `Connect to a Nebula server. REQUIRED: call this once at the start of every MCP session before any other tool call. base_url is required; the server does not assume a default. All subsequent operations will use this connection.
 
 RECOMMENDED WORKFLOW:
-1. connect_server (once, if needed for non-default URL)
-2. For each response: start_agent_session → operations → end_agent_session`,
+1. connect_server (required at session start)
+2. For each response: start_agent_session → operations → end_agent_session
+
+start_agent_session is required for notebook mutations; read-only operations do not require it.`,
         inputSchema: {
             type: 'object',
             properties: {
-                base_url: { type: 'string', description: 'Nebula server URL (e.g., http://localhost:3000). If not provided, connects to the default configured URL.' },
+                base_url: { type: 'string', description: 'Nebula server URL (e.g., http://localhost:3000).' },
             },
+            required: ['base_url'],
         },
         annotations: { destructiveHint: false },
     },
     async execute(params, client) {
         // This is handled specially by the MCP server
         // The client parameter here is not used - the MCP server creates a new client
-        return { success: true, data: { url: params.base_url || 'default' } };
+        return { success: true, data: { url: params.base_url } };
     },
     formatForMCP(result) {
         if (!result.success) {
@@ -730,7 +735,9 @@ RECOMMENDED WORKFLOW:
 export const startAgentSessionTool = {
     definition: {
         name: 'start_agent_session',
-        description: `Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done. IMPORTANT: call connect_server first if you're not sure you're on the correct Nebula URL (tools default to NEBULA_URL or http://localhost:3000).
+        description: `Start an agent session, locking the notebook for agent use. The UI will show a locked indicator and prevent user edits. Always call end_agent_session when done.
+
+See connect_server for required MCP workflow.
 
 This call validates that the notebook path exists; it will error if the path is wrong or missing.
 
@@ -750,13 +757,17 @@ If a previous agent session was not properly ended (e.g., due to a crash or time
                     type: 'boolean',
                     description: 'DANGEROUS: Force steal the lock even if another session is active. Use ONLY with explicit user permission to avoid disrupting another agent. Default: false',
                 },
+                last_session_timestamp: {
+                    type: 'number',
+                    description: 'Optional timestamp (ms since epoch) to fetch updates since last agent session',
+                },
             },
             required: ['path'],
         },
         annotations: { destructiveHint: true },
     },
     async execute(params, client) {
-        const result = await client.startAgentSession(params.path, params.agent_id, params.force);
+        const result = await client.startAgentSession(params.path, params.agent_id, params.force, params.last_session_timestamp);
         if (!result.success) {
             return { success: false, error: result.error };
         }
@@ -768,6 +779,7 @@ If a previous agent session was not properly ended (e.g., due to a crash or time
             success: true,
             data: {
                 warning: result.data?.warning,
+                updatesSince: result.data?.updatesSince,
             },
         };
     },
@@ -778,6 +790,10 @@ If a previous agent session was not properly ended (e.g., due to a crash or time
         let msg = 'Agent session started - notebook locked';
         if (result.data?.warning) {
             msg += `\n⚠️ ${result.data.warning}`;
+        }
+        if (result.data?.updatesSince && result.data.updatesSince.length > 0) {
+            const updatesSummary = result.data.updatesSince.map(u => `  • ${u.description} (${new Date(u.timestamp).toLocaleTimeString()})`).join('\n');
+            msg += `\n📝 Updates since last session:\n${updatesSummary}`;
         }
         return [{ type: 'text', text: msg }];
     },
@@ -966,6 +982,44 @@ export const insertCellsTool = {
         return [{ type: 'text', text: `Inserted ${insertedCount} cell${insertedCount !== 1 ? 's' : ''} at #${startIndex + 1}: ${insertedIds.join(', ')} (${totalCells} cell${totalCells !== 1 ? 's' : ''} total)` }];
     },
 };
+export const clearNotebookTool = {
+    definition: {
+        name: 'clear_notebook',
+        description: 'Clear all cells from a notebook.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'Path to the notebook file' },
+            },
+            required: ['path'],
+        },
+        annotations: { destructiveHint: true },
+    },
+    async execute(params, client) {
+        const result = await client.clearNotebookOp(params.path);
+        if (!result.success) {
+            return { success: false, error: result.error };
+        }
+        return {
+            success: true,
+            data: {
+                deletedCount: result.data?.deletedCount ?? 0,
+                metadata: result.data?.metadata,
+            },
+        };
+    },
+    formatForMCP(result) {
+        if (!result.success) {
+            return [{ type: 'text', text: `Error: ${result.error}` }];
+        }
+        const { deletedCount, metadata } = result.data;
+        let msg = `Cleared notebook: deleted ${deletedCount} cell${deletedCount !== 1 ? 's' : ''}`;
+        if (metadata?.operationTime !== undefined) {
+            msg += ` (${metadata.operationTime}ms)`;
+        }
+        return [{ type: 'text', text: msg }];
+    },
+};
 export const clearOutputsTool = {
     definition: {
         name: 'clear_outputs',
@@ -1055,6 +1109,7 @@ export const notebookTools = [
     insertCellTool,
     updateCellTool,
     deleteCellTool,
+    clearNotebookTool,
     createNotebookTool,
     moveCellTool,
     duplicateCellTool,
