@@ -133,8 +133,10 @@ export async function executeToolForMCP(
   try {
     // Clear any stale backend info before executing the tool
     client.consumeLastBackend();
+    client.consumeAutoStartWarning();
     const result = await tool.execute(params, client);
     const backend = client.consumeLastBackend();
+    const autoStartWarning = client.consumeAutoStartWarning();
 
     // Record the tool call timestamp for future change tracking
     if (isNotebookTool) {
@@ -154,6 +156,9 @@ export async function executeToolForMCP(
     }
 
     // Add backend info
+    if (autoStartWarning) {
+      content.push({ type: 'text', text: `Warning: ${autoStartWarning}` });
+    }
     if (backend) {
       content.push({ type: 'text', text: `Backend: ${backend}` });
     }
@@ -175,6 +180,7 @@ export async function executeToolForMCP(
     };
   } catch (error) {
     client.consumeLastBackend();
+    client.consumeAutoStartWarning();
     // Still record timestamp even on error
     if (isNotebookTool) {
       client.recordToolCallTimestamp(notebookPath);

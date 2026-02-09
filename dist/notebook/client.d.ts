@@ -138,11 +138,14 @@ export declare class NebulaClient {
     private activeAgentSessions;
     private agentSessionInFlight;
     private lastBackend?;
+    private lastAutoStartWarning?;
+    private autoStartWarnedPaths;
     private activeNotebookPath;
     private lastToolCallTimestamp;
     constructor(config?: NebulaClientConfig);
     private recordBackend;
     consumeLastBackend(): 'ui' | 'headless' | undefined;
+    consumeAutoStartWarning(): string | undefined;
     /**
      * Get the notebook path associated with the active agent session (if any).
      */

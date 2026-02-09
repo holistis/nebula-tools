@@ -147,6 +147,8 @@ export class NebulaClient {
   private activeAgentSessions: Set<string> = new Set();
   private agentSessionInFlight: Map<string, Promise<ToolResult<{ warning?: string }>>> = new Map();
   private lastBackend?: 'ui' | 'headless';
+  private lastAutoStartWarning?: string;
+  private autoStartWarnedPaths: Set<string> = new Set();
   private activeNotebookPath: string | null = null;
   // Track last tool call timestamp per notebook path for user change detection
   private lastToolCallTimestamp: Map<string, number> = new Map();
@@ -171,6 +173,12 @@ export class NebulaClient {
     const backend = this.lastBackend;
     this.lastBackend = undefined;
     return backend;
+  }
+
+  consumeAutoStartWarning(): string | undefined {
+    const warning = this.lastAutoStartWarning;
+    this.lastAutoStartWarning = undefined;
+    return warning;
   }
 
   /**
@@ -1108,10 +1116,15 @@ export class NebulaClient {
     if (inFlight) {
       return inFlight;
     }
+    const shouldWarn = !this.autoStartWarnedPaths.has(path);
     const startPromise = this.startAgentSession(path, this.agentId);
     this.agentSessionInFlight.set(path, startPromise);
     try {
       const result = await startPromise;
+      if (result.success && shouldWarn) {
+        this.lastAutoStartWarning = `Auto-started agent session for ${path}. Call start_agent_session/end_agent_session explicitly.`;
+        this.autoStartWarnedPaths.add(path);
+      }
       return result;
     } finally {
       this.agentSessionInFlight.delete(path);

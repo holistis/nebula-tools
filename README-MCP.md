@@ -88,6 +88,7 @@ end_agent_session(path="/path/to/notebook.ipynb")
 - **Clean Handoff**: `end_agent_session` unlocks the notebook so users can edit again
 - **Per-Response**: Start/end in EVERY response ensures the lock isn't held between turns
 - **Path validation**: `start_agent_session` fails if the notebook path doesn't exist (typos are caught early)
+- **Fallback**: If you skip `start_agent_session`, the MCP client will auto-start a session on the first write. You’ll see a warning in the tool response encouraging explicit start/end.
 
 ### Example: Multi-step Analysis
 ```
