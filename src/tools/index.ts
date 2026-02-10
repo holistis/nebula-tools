@@ -114,13 +114,17 @@ export async function executeToolForMCP(
 
   // Extract notebook path for user change tracking
   const notebookPath = (params.path as string) || undefined;
-  const isNotebookTool = NOTEBOOK_TOOLS.has(name) && notebookPath;
+  const isNotebookTool = NOTEBOOK_TOOLS.has(name) && Boolean(notebookPath);
+  const hasActiveSession = isNotebookTool ? client.hasActiveAgentSession(notebookPath as string) : false;
 
   // Query updates BEFORE executing the tool (to capture what happened since last call)
   let updatesSince: Array<{ type: string; cellId?: string; cellIndex?: number; timestamp: number; description: string }> = [];
-  if (isNotebookTool) {
+  const shouldCheckUpdates = isNotebookTool && (
+    name === 'start_agent_session' || !hasActiveSession
+  );
+  if (shouldCheckUpdates) {
     try {
-      const updatesResult = await client.getUpdatesSinceOp(notebookPath);
+      const updatesResult = await client.getUpdatesSinceOp(notebookPath as string);
       if (updatesResult.success && updatesResult.data?.updates.length) {
         updatesSince = updatesResult.data.updates;
       }
@@ -140,7 +144,7 @@ export async function executeToolForMCP(
 
     // Record the tool call timestamp for future change tracking
     if (isNotebookTool) {
-      client.recordToolCallTimestamp(notebookPath);
+      client.recordToolCallTimestamp(notebookPath as string);
     }
 
     // Build content array
@@ -183,7 +187,7 @@ export async function executeToolForMCP(
     client.consumeAutoStartWarning();
     // Still record timestamp even on error
     if (isNotebookTool) {
-      client.recordToolCallTimestamp(notebookPath);
+      client.recordToolCallTimestamp(notebookPath as string);
     }
     const message = error instanceof Error ? error.message : String(error);
     return {

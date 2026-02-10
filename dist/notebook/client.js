@@ -105,6 +105,9 @@ export class NebulaClient {
         this.lastAutoStartWarning = undefined;
         return warning;
     }
+    hasActiveAgentSession(path) {
+        return this.activeAgentSessions.has(path);
+    }
     /**
      * Get the notebook path associated with the active agent session (if any).
      */

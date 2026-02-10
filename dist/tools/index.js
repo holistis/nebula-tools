@@ -88,10 +88,12 @@ export async function executeToolForMCP(name, params, client) {
     }
     // Extract notebook path for user change tracking
     const notebookPath = params.path || undefined;
-    const isNotebookTool = NOTEBOOK_TOOLS.has(name) && notebookPath;
+    const isNotebookTool = NOTEBOOK_TOOLS.has(name) && Boolean(notebookPath);
+    const hasActiveSession = isNotebookTool ? client.hasActiveAgentSession(notebookPath) : false;
     // Query updates BEFORE executing the tool (to capture what happened since last call)
     let updatesSince = [];
-    if (isNotebookTool) {
+    const shouldCheckUpdates = isNotebookTool && (name === 'start_agent_session' || !hasActiveSession);
+    if (shouldCheckUpdates) {
         try {
             const updatesResult = await client.getUpdatesSinceOp(notebookPath);
             if (updatesResult.success && updatesResult.data?.updates.length) {

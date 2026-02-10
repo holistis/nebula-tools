@@ -181,6 +181,10 @@ export class NebulaClient {
     return warning;
   }
 
+  hasActiveAgentSession(path: string): boolean {
+    return this.activeAgentSessions.has(path);
+  }
+
   /**
    * Get the notebook path associated with the active agent session (if any).
    */

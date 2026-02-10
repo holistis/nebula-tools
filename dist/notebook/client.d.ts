@@ -146,6 +146,7 @@ export declare class NebulaClient {
     private recordBackend;
     consumeLastBackend(): 'ui' | 'headless' | undefined;
     consumeAutoStartWarning(): string | undefined;
+    hasActiveAgentSession(path: string): boolean;
     /**
      * Get the notebook path associated with the active agent session (if any).
      */
