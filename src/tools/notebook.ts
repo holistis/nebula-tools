@@ -1364,54 +1364,12 @@ export const insertCellsTool: Tool<InsertCellsParams, InsertCellsResult> = {
     if (!params.cells || params.cells.length === 0) {
       return { success: false, error: 'Must provide at least one cell' };
     }
-
-    // Implement as a series of insert_cell calls (shorthand at MCP level, no server-side batch needed)
-    const insertedIds: string[] = [];
-    let startIndex = params.position ?? -1;
-
-    // If appending (-1), get current cell count to determine start index
-    if (startIndex === -1) {
-      const notebook = await client.readNotebookViaRouter(params.path);
-      if (!notebook.success) {
-        return { success: false, error: `Failed to read notebook: ${notebook.error}` };
-      }
-      startIndex = notebook.data!.cells.length;
+    const result = await client.insertCellsOp(params.path, params.cells, params.position ?? -1);
+    if (!result.success) {
+      return { success: false, error: result.error };
     }
 
-    // Insert cells in order at consecutive positions
-    for (let i = 0; i < params.cells.length; i++) {
-      const cellData = params.cells[i];
-      const cellId = cellData.id || `cell-${Date.now()}-${i}`;
-      const cell = {
-        id: cellId,
-        type: (cellData.type || 'code') as 'code' | 'markdown',
-        content: cellData.content,
-      };
-
-      const result = await client.insertCellOp(params.path, startIndex + i, cell);
-      if (!result.success) {
-        return {
-          success: false,
-          error: `Failed to insert cell ${i + 1}: ${result.error}`,
-          data: { insertedCount: insertedIds.length, insertedIds, startIndex, totalCells: -1 },
-        };
-      }
-      insertedIds.push(result.data!.cellId);
-    }
-
-    // Get final cell count
-    const notebook = await client.readNotebookViaRouter(params.path);
-    const totalCells = notebook.success ? notebook.data!.cells.length : -1;
-
-    return {
-      success: true,
-      data: {
-        insertedCount: insertedIds.length,
-        insertedIds,
-        startIndex,
-        totalCells,
-      },
-    };
+    return { success: true, data: result.data };
   },
 
   formatForMCP(result) {
