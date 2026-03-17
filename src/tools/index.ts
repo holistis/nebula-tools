@@ -134,6 +134,28 @@ export async function executeToolForMCP(
     }
   }
 
+  // Validate required parameters before execution
+  const schema = tool.definition.inputSchema;
+  if (schema.required) {
+    const missing = schema.required.filter(key => params[key] === undefined || params[key] === null);
+    if (missing.length > 0) {
+      return {
+        content: [{ type: 'text', text: `Error: Missing required parameter(s): ${missing.join(', ')}` }],
+        isError: true,
+      };
+    }
+  }
+
+  // Warn about unexpected parameters (likely typos like "source" instead of "content")
+  const knownParams = new Set(Object.keys(schema.properties || {}));
+  const unknownParams = Object.keys(params).filter(key => !knownParams.has(key));
+  if (unknownParams.length > 0) {
+    return {
+      content: [{ type: 'text', text: `Error: Unknown parameter(s): ${unknownParams.join(', ')}. Valid parameters: ${[...knownParams].join(', ')}` }],
+      isError: true,
+    };
+  }
+
   try {
     // Clear any stale backend info before executing the tool
     client.consumeLastBackend();
